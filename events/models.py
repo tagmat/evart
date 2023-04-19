@@ -54,6 +54,10 @@ class FieldType(models.Model):
     name = models.CharField(max_length=200)
     custom_type = models.BooleanField(default=False)
     enum_choices = models.CharField(max_length=1000, null=True, blank=True)
+    max_length = models.IntegerField(null=True, blank=True)
+    type = models.CharField(max_length=200, default='string')
+    format = models.CharField(max_length=200, blank=True, null=True)
+
 
     def __str__(self):
         return self.name
