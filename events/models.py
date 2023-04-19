@@ -17,7 +17,7 @@ class Event(models.Model):
     type = models.ForeignKey("EventType", default=1, on_delete=models.CASCADE)
 
     def __str__(self):
-        return self.name
+        return "{0}/{1} [{2}]".format(self.domain.name, self.name, self.type.name)
 
 
 class Domain(models.Model):
