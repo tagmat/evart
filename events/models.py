@@ -19,6 +19,9 @@ class Event(models.Model):
     def __str__(self):
         return "{0}/{1} [{2}]".format(self.domain.name, self.name, self.type.name)
 
+    def slug_name(self):
+        return "{0}.{1}".format(self.domain.name.replace("/", "_"), self.name)
+
 
 class Domain(models.Model):
     project = models.ForeignKey("Project", on_delete=models.CASCADE)
@@ -58,7 +61,6 @@ class FieldType(models.Model):
     type = models.CharField(max_length=200, default='string')
     format = models.CharField(max_length=200, blank=True, null=True)
 
-
     def __str__(self):
         return self.name
 
@@ -75,6 +77,7 @@ class Service(models.Model):
 
 class Project(models.Model):
     name = models.CharField(max_length=200)
+    slug_name = models.CharField(max_length=20)
 
     def __str__(self):
         return self.name
