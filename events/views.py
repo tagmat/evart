@@ -16,7 +16,16 @@ def generate_full_yaml(request, service_id):
             'version': service.version,
             'description': service.description if service.description is not None else "N/A"
         },
-        'servers': {},
+        'servers': {
+            'test':
+                {
+                    'url': "test.mykafkacluster.org:8092",
+                    'protocol': "kafka-secure",
+                    "description": "Test broker",
+                    "security":
+                        {"saslScram": []}
+                }
+        },
         'defaultContentType': 'application/json',
         'channels': {},
         'components': {
@@ -43,12 +52,12 @@ def generate_full_yaml(request, service_id):
             'name': "{0} event".format(event.name),
             'title': "{0}".format(event.name),
             'summary': "Summary for {0} event".format(event.name),
-            'payload': {
+            # 'traits':{},
+        }
+        if event.payload is not None:
+            configuration['components']['messages'][event.name]['payload'] = {
                 '$ref': '#/components/schemas/{0}'.format(event.payload.name)
             }
-            # 'traits':{},
-
-        }
 
     for payload in Payload.objects.filter(Q(event__in=service.consumes.all()) | Q(event__in=service.publishes.all())):
         properties = {}
