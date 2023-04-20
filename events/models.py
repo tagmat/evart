@@ -68,6 +68,10 @@ class FieldType(models.Model):
 class Service(models.Model):
     project = models.ForeignKey("Project", on_delete=models.CASCADE)
     name = models.CharField(max_length=200)
+    slug_name = models.CharField(max_length=200)
+    asyncapi_version = models.CharField(max_length=20, default="2.6.0")
+    version = models.CharField(max_length=20, default="1.0.0")
+    description = models.TextField(max_length=1000, default='Service description')
     consumes = models.ManyToManyField("Event", related_name="event_consumers")
     publishes = models.ManyToManyField("Event", related_name="event_publishers")
 

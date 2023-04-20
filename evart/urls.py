@@ -17,6 +17,9 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 
+import events.views
+
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('yaml/<int:service_id>/', events.views.generate_full_yaml),
 ]
