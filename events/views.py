@@ -77,4 +77,8 @@ def generate_full_yaml(request, service_id):
         }
 
     yaml_out = yaml.dump(configuration, sort_keys=False)
-    return HttpResponse(yaml_out)
+
+    response = HttpResponse(yaml_out, content_type='application/x-yaml')
+    response['Content-Disposition'] = 'attachment; filename={0}.yaml'.format(service.slug_name)
+
+    return response
