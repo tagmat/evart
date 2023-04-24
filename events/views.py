@@ -40,7 +40,7 @@ def generate_full_yaml(request, service_id):
             'publish' if event in service.consumes.all() else 'subscribe':
                 {
                     'summary': "{0}".format(event.name),
-                    # 'operationId':"",
+                    'operationId': "{1}{0}".format(event.pascal_name(), 'publish' if event in service.consumes.all() else 'subscribe'),
                     # 'traits': "", #$ref: '#/components/operationTraits/kafka'
                     'message': {
                         '$ref': '#/components/messages/{0}'.format(event.name)

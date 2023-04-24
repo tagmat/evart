@@ -19,6 +19,9 @@ class Event(models.Model):
     def __str__(self):
         return "{0}/{1} [{2}]".format(self.domain.name, self.name, self.type.name)
 
+    def pascal_name(self):
+        return "%s%s" % (self.name[0].upper(), self.name[1:])
+
     def slug_name(self):
         return "{0}.{2}.{1}".format(self.domain.name.replace("/", "_"), self.name, self.type.name.lower())
 
