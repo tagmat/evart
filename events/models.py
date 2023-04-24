@@ -20,7 +20,7 @@ class Event(models.Model):
         return "{0}/{1} [{2}]".format(self.domain.name, self.name, self.type.name)
 
     def slug_name(self):
-        return "{0}.{1}".format(self.domain.name.replace("/", "_"), self.name)
+        return "{0}.{2}.{1}".format(self.domain.name.replace("/", "_"), self.name, self.type.name.lower())
 
 
 class Domain(models.Model):
