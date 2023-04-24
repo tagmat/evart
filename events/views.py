@@ -66,6 +66,9 @@ def generate_full_yaml(request, service_id):
                 if field.type.enum_choices is not None:
                     enum_choices = field.type.enum_choices.replace(" ", "").split(",")
                     properties[field.name] = {
+                        '$ref': '#/components/schemas/{0}'.format(field.type.name)
+                    }
+                    configuration['components']['schemas'][field.type.name] = {
                         'type': field.type.type,
                         'enum': enum_choices
                     }
