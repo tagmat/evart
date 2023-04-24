@@ -19,11 +19,11 @@ def generate_full_yaml(request, service_id):
         'servers': {
             'test':
                 {
-                    'url': "test.mykafkacluster.org:8092",
+                    'url': "127.0.0.1:9092",
                     'protocol': "kafka-secure",
                     "description": "Test broker",
-                    "security":
-                        {"saslScram": []}
+                    "security": []
+                        # {"saslScram": []}
                 }
         },
         'defaultContentType': 'application/json',
@@ -49,7 +49,7 @@ def generate_full_yaml(request, service_id):
         }
 
         configuration['components']['messages'][event.name] = {
-            'name': "{0} event".format(event.name),
+            'name': "{0}".format(event.name),
             'title': "{0}".format(event.name),
             'summary': "Summary for {0} event".format(event.name),
             # 'traits':{},
