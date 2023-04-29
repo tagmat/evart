@@ -103,7 +103,6 @@ def generate_full_yaml(request, service_id):
             else:
                 properties[field.name] = {
                     'type': field.type.type,
-                    'x-parser-schema-id': field.type.name,
                     # 'format': field.type.format
                     # 'description': field.description
                 }
