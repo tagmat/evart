@@ -60,18 +60,21 @@ def generate_full_yaml(request, service_id):
                     'eventName': {
                         'type': 'string',
                         'default': event.pascal_name(),
-                        'description': 'Name of the event'
+                        'description': 'Name of the event',
+                        'x-parser-schema-id': 'eventName'
                     },
                     'sentAt': {
                         'type': 'string',
                         'format': 'date-time',
                         'default': 'now()',
-                        'description': 'Date and time when the message was sent'
+                        'description': 'Date and time when the message was sent',
+                        'x-parser-schema-id': 'sentAt'
                     },
                     'timeToLive': {
                         'type': 'integer',
                         'default': 3600000,
-                        'description': 'Message time to live in milliseconds'
+                        'description': 'Message time to live in milliseconds',
+                        'x-parser-schema-id': 'timeToLive'
                     }
                 }
             },
@@ -94,11 +97,13 @@ def generate_full_yaml(request, service_id):
                     }
                     configuration['components']['schemas'][field.type.name] = {
                         'type': field.type.type,
-                        'enum': enum_choices
+                        'enum': enum_choices,
+                        'x-parser-schema-id': field.type.name
                     }
             else:
                 properties[field.name] = {
                     'type': field.type.type,
+                    'x-parser-schema-id': field.type.name,
                     # 'format': field.type.format
                     # 'description': field.description
                 }
@@ -108,8 +113,8 @@ def generate_full_yaml(request, service_id):
 
         configuration['components']['schemas'][payload.name] = {
             'type': 'object',
-            'properties': properties
-
+            'properties': properties,
+            'x-parser-schema-id': payload.name
         }
 
     yaml_out = yaml.dump(configuration, sort_keys=False)
