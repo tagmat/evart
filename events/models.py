@@ -82,6 +82,25 @@ class Service(models.Model):
         return self.name
 
 
+class GrpcPackage(models.Model):
+    name = models.CharField(max_length=200)
+    service = models.ForeignKey("Service", on_delete=models.CASCADE)
+    syntax = models.CharField(max_length=20, default="proto3")
+
+    def __str__(self):
+        return self.name
+
+
+class GrpcRequest(models.Model):
+    name = models.CharField(max_length=200)
+    package = models.ForeignKey("GrpcPackage", on_delete=models.CASCADE)
+    request = models.ForeignKey("Event", on_delete=models.CASCADE, related_name="grpc_request")
+    response = models.ForeignKey("Event", on_delete=models.CASCADE, related_name="grpc_response")
+
+    def __str__(self):
+        return self.name
+
+
 class Project(models.Model):
     name = models.CharField(max_length=200)
     slug_name = models.CharField(max_length=20)

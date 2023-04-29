@@ -45,7 +45,13 @@ def generate_full_yaml(request, service_id):
                                                    'publish' if event in service.consumes.all() else 'subscribe'),
                     # 'traits': "", #$ref: '#/components/operationTraits/kafka'
                     'message': {
+                        'allOf': [
+                            {
+                                '$ref': '#/components/messages/{0}'.format(event.pascal_name())
+                            }
+                        ],
                         '$ref': '#/components/messages/{0}'.format(event.pascal_name())
+
                     }
                 }
         }
@@ -54,10 +60,32 @@ def generate_full_yaml(request, service_id):
             'name': "{0}".format(event.pascal_name()),
             'title': "{0}".format(event.pascal_name()),
             'summary': "Summary for {0} event".format(event.name),
+            'payload': {
+                'type': 'object',
+                'properties': {
+                    'eventName': {
+                        'type': 'string',
+                        'default': event.pascal_name(),
+                        'description': 'Name of the event'
+                    },
+                    'sentAt': {
+                        'type': 'string',
+                        'format': 'date-time',
+                        'default': 'now()',
+                        'description': 'Date and time when the message was sent'
+                    },
+                    'timeToLive': {
+                        'type': 'integer',
+                        'default': 3600000,
+                        'description': 'Message time to live in milliseconds'
+                    }
+                }
+            },
+
             # 'traits':{},
         }
         if event.payload is not None:
-            configuration['components']['messages'][event.pascal_name()]['payload'] = {
+            configuration['components']['messages'][event.pascal_name()]['payload']['data'] = {
                 '$ref': '#/components/schemas/{0}'.format(event.payload.name)
             }
 
