@@ -51,8 +51,8 @@ def generate_full_yaml(request, service_id):
         }
 
         configuration['components']['messages'][event.pascal_name()] = {
-            'name': "{0}".format(event.name),
-            'title': "{0}".format(event.name),
+            'name': "{0}".format(event.pascal_name()),
+            'title': "{0}".format(event.pascal_name()),
             'summary': "Summary for {0} event".format(event.name),
             # 'traits':{},
         }
