@@ -75,8 +75,8 @@ class Service(models.Model):
     asyncapi_version = models.CharField(max_length=20, default="2.6.0")
     version = models.CharField(max_length=20, default="1.0.0")
     description = models.TextField(max_length=1000, default='Service description')
-    consumes = models.ManyToManyField("Event", related_name="event_consumers")
-    publishes = models.ManyToManyField("Event", related_name="event_publishers")
+    consumes = models.ManyToManyField("Event", related_name="event_consumers", null=True, blank=True)
+    publishes = models.ManyToManyField("Event", related_name="event_publishers", null=True, blank=True)
 
     def __str__(self):
         return self.name
