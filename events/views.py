@@ -57,7 +57,7 @@ def generate_full_yaml(request, service_id):
             # 'traits':{},
         }
         if event.payload is not None:
-            configuration['components']['messages'][camel_to_pascal_case(event.name)]['payload'] = {
+            configuration['components']['messages'][event.pascal_name]['payload'] = {
                 '$ref': '#/components/schemas/{0}'.format(event.payload.name)
             }
 
