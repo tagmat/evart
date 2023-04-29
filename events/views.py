@@ -41,23 +41,23 @@ def generate_full_yaml(request, service_id):
             'publish' if event in service.consumes.all() else 'subscribe':
                 {
                     'summary': "{0}".format(event.name),
-                    'operationId': "{1}{0}".format(event.pascal_name(),
+                    'operationId': "{1}{0}".format(event.pascal_name()(),
                                                    'publish' if event in service.consumes.all() else 'subscribe'),
                     # 'traits': "", #$ref: '#/components/operationTraits/kafka'
                     'message': {
-                        '$ref': '#/components/messages/{0}'.format(event.pascal_name)
+                        '$ref': '#/components/messages/{0}'.format(event.pascal_name())
                     }
                 }
         }
 
-        configuration['components']['messages'][event.pascal_name] = {
+        configuration['components']['messages'][event.pascal_name()] = {
             'name': "{0}".format(event.name),
             'title': "{0}".format(event.name),
             'summary': "Summary for {0} event".format(event.name),
             # 'traits':{},
         }
         if event.payload is not None:
-            configuration['components']['messages'][event.pascal_name]['payload'] = {
+            configuration['components']['messages'][event.pascal_name()]['payload'] = {
                 '$ref': '#/components/schemas/{0}'.format(event.payload.name)
             }
 
