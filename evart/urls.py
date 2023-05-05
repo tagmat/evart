@@ -22,4 +22,5 @@ import events.views
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('yaml/<int:service_id>/', events.views.generate_full_yaml, name="download-yaml"),
+    path('proto/<int:service_id>/', events.views.generate_full_proto, name="download-proto"),
 ]

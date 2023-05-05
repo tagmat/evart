@@ -7,6 +7,67 @@ from events.models import *
 
 
 @staff_member_required
+def generate_full_proto(request, service_id):
+    service = Service.objects.get(id=service_id)
+
+    proto_file = 'syntax = "proto3";\n\n'
+
+    proto_file += 'package {0}_{1};\n\n'.format(service.project.slug_name, service.slug_name)
+
+    proto_file += 'service {0} {{\n'.format(service.grpcpackage.service_name)
+
+    has_empty = False
+    for grpcservice in service.grpcpackage.grpcservice_set.all():
+        if grpcservice.request is None:
+            has_empty = True
+            request = 'Empty'
+        else:
+            request = grpcservice.request.name
+
+        if grpcservice.response.name is None:
+            has_empty = True
+            response = 'Empty'
+        else:
+            response = grpcservice.response.name
+        proto_file += '    rpc {0} ({1}) returns ({2}){{}}\n'.format(grpcservice.name, request, response)
+    proto_file += '}\n\n'
+
+    if has_empty:
+        proto_file += 'message Empty {}\n\n'
+
+    for message in Payload.objects.filter(Q(grpc_request_payload__in=service.grpcpackage.grpcservice_set.all()) | Q(
+            grpc_response_payload__in=service.grpcpackage.grpcservice_set.all())).distinct():
+        proto_file += 'message {0} {{\n'.format(message.name)
+        field_id = 1
+        enum_to_append = ''
+        for field in message.field_set.all():
+            if field.type.custom_type:
+                if field.type.enum_choices is not None:
+                    enum_choices = field.type.enum_choices.replace(" ", "").split(",")
+                    proto_file += '    {3}{0} {1} = {2};\n'.format(field.type.name, field.name, field_id,
+                                                                   '' if field.required else 'optional ')
+                    enum_to_append += 'enum {0} {{\n'.format(field.type.name)
+                    enum_id = 0
+                    for enum_choice in enum_choices:
+                        enum_to_append += '    {0} = {1};\n'.format(enum_choice.upper(), enum_id)
+                        enum_id += 1
+                    enum_to_append += '}\n\n'
+            else:
+                proto_file += '    {3}{0} {1} = {2};\n'.format(field.type.protobuf_type, field.name, field_id,
+                                                               '' if field.required else 'optional ')
+
+            field_id += 1
+        proto_file += '}\n\n'
+        proto_file += enum_to_append
+
+    response = HttpResponse(proto_file, content_type="text/plain", )
+    response['Content-Disposition'] = 'attachment; filename="{0}_{1}_{2}.proto"'.format(service.project.slug_name,
+                                                                                   service.slug_name,
+                                                                                   service.grpcpackage.name)
+    return response
+
+
+@staff_member_required
 def generate_full_yaml(request, service_id):
     service = Service.objects.get(id=service_id)
 
