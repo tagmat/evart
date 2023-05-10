@@ -161,6 +161,18 @@ def generate_full_yaml(request, service_id):
                         'enum': enum_choices,
                         'x-parser-schema-id': field.type.name
                     }
+                else:
+                    if field.type.type == "string":
+                        properties[field.name] = {
+                            '$ref': '#/components/schemas/{0}'.format(field.type.name)
+                        }
+                        configuration['components']['schemas'][field.type.name] = {
+                            'type': field.type.type,
+                            'x-parser-schema-id': field.type.name
+                        }
+                        if field.type.max_length > 0:
+                            configuration['components']['schemas'][field.type.name]['maxLength'] = field.type.max_length
+
             else:
                 properties[field.name] = {
                     'type': field.type.type,
