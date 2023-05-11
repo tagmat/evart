@@ -99,8 +99,10 @@ class GrpcPackage(models.Model):
 class GrpcService(models.Model):
     name = models.CharField(max_length=200)
     package = models.ForeignKey("GrpcPackage", on_delete=models.CASCADE)
-    request = models.ForeignKey("Payload", on_delete=models.CASCADE, related_name="grpc_request_payload", null=True, blank=True)
-    response = models.ForeignKey("Payload", on_delete=models.CASCADE, related_name="grpc_response_payload", null=True, blank=True)
+    request = models.ForeignKey("Payload", on_delete=models.CASCADE, related_name="grpc_request_payload", null=True,
+                                blank=True)
+    response = models.ForeignKey("Payload", on_delete=models.CASCADE, related_name="grpc_response_payload", null=True,
+                                 blank=True)
 
     def __str__(self):
         return self.name
