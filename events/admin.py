@@ -8,7 +8,7 @@ from events.models import *
 
 class EventAdmin(admin.ModelAdmin):
     list_display = ["name", "type", "domain", "payload", "response_payload"]
-    list_filter = ["domain"]
+    list_filter = ["domain", "type", "payload", "response_payload"]
 
 
 class EventInline(admin.TabularInline):
@@ -41,6 +41,7 @@ class DomainAdmin(admin.ModelAdmin):
 class PayloadAdmin(admin.ModelAdmin):
     list_display = ["name"]
     inlines = [FieldInline, ]
+    list_filter = ["grpc_request_payload", "grpc_response_payload"]
 
 
 class ServiceAdmin(NestedModelAdmin):
