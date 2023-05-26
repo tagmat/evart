@@ -29,6 +29,16 @@ class GrpcPackageInline(NestedStackedInline):
     inlines = [GrpcServiceInline, ]
 
 
+class ConsumesInline(NestedStackedInline):
+    model = Service.consumes.through
+    # inlines = [EventInline, ]
+
+
+class PublishesInline(NestedStackedInline):
+    model = Service.publishes.through
+    # inlines = [EventInline, ]
+
+
 class FieldInline(admin.TabularInline):
     model = Field
 
@@ -46,7 +56,8 @@ class PayloadAdmin(admin.ModelAdmin):
 
 class ServiceAdmin(NestedModelAdmin):
     list_display = ["name", "download_yaml_url", "download_proto_url"]
-    inlines = [GrpcPackageInline, ]
+    inlines = [GrpcPackageInline, PublishesInline, ConsumesInline, ]
+    filter_horizontal = ["consumes", "publishes"]
 
     @admin.display(description="Download YAML")
     def download_yaml_url(self, obj):
