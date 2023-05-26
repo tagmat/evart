@@ -56,7 +56,7 @@ class PayloadAdmin(admin.ModelAdmin):
 
 class ServiceAdmin(NestedModelAdmin):
     list_display = ["name", "download_yaml_url", "download_proto_url"]
-    inlines = [GrpcPackageInline, PublishesInline, ConsumesInline, ]
+    inlines = [GrpcPackageInline, ]
     filter_horizontal = ["consumes", "publishes"]
 
     @admin.display(description="Download YAML")
