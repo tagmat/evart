@@ -23,14 +23,14 @@ class Event(models.Model):
 
     def pascal_name(self, with_params=False):
         name = self.name if with_params else re.sub(r"\[(.*?)\]", "",
-                                                    re.sub(r"\.\[(.*?)\]", "", self.name).__str__()).__str__(),
+                                                    re.sub(r"\.\[(.*?)\]", "", self.name))
         return "%s%s" % (name[0].upper(), name[1:])
 
     def slug_name(self, with_params=False):
         return "{0}.{2}.{1}".format(
             self.domain.name.replace("/", "_"),
             self.name if with_params else re.sub(r"\[(.*?)\]", "",
-                                                 re.sub(r"\.\[(.*?)\]", "", self.name).__str__()).__str__(),
+                                                 re.sub(r"\.\[(.*?)\]", "", self.name)),
             self.type.name.lower())
 
 
