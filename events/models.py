@@ -1,3 +1,5 @@
+import re
+
 from django.db import models
 
 
@@ -9,7 +11,7 @@ class EventType(models.Model):
 
 
 class Event(models.Model):
-    name = models.CharField(max_length=200)
+    name = models.CharField(max_length=200, help_text="You can use [paramName] in name to pass parameters to event.")
     domain = models.ForeignKey("Domain", on_delete=models.CASCADE)
     payload = models.ForeignKey("Payload", null=True, blank=True, on_delete=models.SET_NULL)
     response_payload = models.ForeignKey("Payload", null=True, blank=True, on_delete=models.SET_NULL,
@@ -19,11 +21,17 @@ class Event(models.Model):
     def __str__(self):
         return "{0}/{1} [{2}]".format(self.domain.name, self.name, self.type.name)
 
-    def pascal_name(self):
-        return "%s%s" % (self.name[0].upper(), self.name[1:])
+    def pascal_name(self, with_params=False):
+        name = self.name if with_params else re.sub(r"\[(.*?)\]", "",
+                                                    re.sub(r"\.\[(.*?)\]", "", self.name).__str__()).__str__(),
+        return "%s%s" % (name[0].upper(), name[1:])
 
-    def slug_name(self):
-        return "{0}.{2}.{1}".format(self.domain.name.replace("/", "_"), self.name, self.type.name.lower())
+    def slug_name(self, with_params=False):
+        return "{0}.{2}.{1}".format(
+            self.domain.name.replace("/", "_"),
+            self.name if with_params else re.sub(r"\[(.*?)\]", "",
+                                                 re.sub(r"\.\[(.*?)\]", "", self.name).__str__()).__str__(),
+            self.type.name.lower())
 
 
 class Domain(models.Model):

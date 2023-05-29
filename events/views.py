@@ -97,7 +97,7 @@ def generate_full_yaml(request, service_id):
     }
 
     for event in service.consumes.all().union(service.publishes.all()):
-        configuration['channels']["{0}.{1}".format(service.project.slug_name, event.slug_name())] = {
+        configuration['channels']["{0}.{1}".format(service.project.slug_name, event.slug_name(with_params=True))] = {
             'description': "{0} {1} channel".format(event.domain.project.name, event.name),
             'publish' if event in service.consumes.all() else 'subscribe':
                 {
