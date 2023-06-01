@@ -62,8 +62,8 @@ def generate_full_proto(request, service_id):
 
     response = HttpResponse(proto_file, content_type="text/plain", )
     response['Content-Disposition'] = 'attachment; filename="{0}_{1}_{2}.proto"'.format(service.project.slug_name,
-                                                                                   service.slug_name,
-                                                                                   service.grpcpackage.name)
+                                                                                        service.slug_name,
+                                                                                        service.grpcpackage.name)
     return response
 
 
@@ -97,19 +97,29 @@ def generate_full_yaml(request, service_id):
     }
 
     for event in service.consumes.all().union(service.publishes.all()):
-        configuration['channels']["{0}.{1}".format(service.project.slug_name, event.slug_name(with_params=True))] = {
+        channel_key = "{0}.{1}".format(service.project.slug_name, event.slug_name(with_params=True))
+        configuration['channels'][channel_key] = {
             'description': "{0} {1} channel".format(event.domain.project.name, event.name),
-            'publish' if event in service.consumes.all() else 'subscribe':
-                {
-                    'summary': "{0}".format(event.name),
-                    'operationId': "{1}{0}".format(event.pascal_name(),
-                                                   'publish' if event in service.consumes.all() else 'subscribe'),
-                    # 'traits': "", #$ref: '#/components/operationTraits/kafka'
-                    'message': {
-                        '$ref': '#/components/messages/{0}'.format(event.pascal_name())
-                    }
-                }
         }
+
+        if event in service.consumes.all():
+            configuration['channels'][channel_key]['publish'] = {
+                'summary': "{0}".format(event.name),
+                'operationId': "{1}{0}".format(event.pascal_name(), 'publish'),
+                # 'traits': "", #$ref: '#/components/operationTraits/kafka'
+                'message': {
+                    '$ref': '#/components/messages/{0}'.format(event.pascal_name())
+                }
+            }
+        if event in service.publishes.all():
+            configuration['channels'][channel_key]['subscribe'] = {
+                'summary': "{0}".format(event.name),
+                'operationId': "{1}{0}".format(event.pascal_name(), 'subscribe'),
+                # 'traits': "", #$ref: '#/components/operationTraits/kafka'
+                'message': {
+                    '$ref': '#/components/messages/{0}'.format(event.pascal_name())
+                }
+            }
 
         configuration['components']['messages'][event.pascal_name()] = {
             'name': "{0}".format(event.pascal_name()),
