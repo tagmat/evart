@@ -111,15 +111,118 @@ def generate_full_yaml(request, service_id):
                     '$ref': '#/components/messages/{0}'.format(event.pascal_name())
                 }
             }
+            if event.response_payload is not None:
+                channel_key = "{0}.{1}".format(service.project.slug_name,
+                                               event.slug_name(with_params=True, response=True))
+                configuration['channels'][channel_key] = {
+                    'description': "{0} {1} channel".format(event.domain.project.name, event.name),
+                    'x-response-of': "{0}.{1}".format(service.project.slug_name, event.slug_name(with_params=True))
+                }
+                configuration['channels'][channel_key]['subscribe'] = {
+                    'summary': "{0}".format(event.name),
+                    'operationId': "{1}{0}".format(event.pascal_name(response=True), 'subscribe'),
+                    # 'traits': "", #$ref: '#/components/operationTraits/kafka'
+                    'message': {
+                        '$ref': '#/components/messages/{0}'.format(event.pascal_name(response=True))
+                    }
+                }
+                configuration['components']['messages'][event.pascal_name(response=True)] = {
+                    'name': "{0}".format(event.pascal_name(response=True)),
+                    'title': "{0}".format(event.pascal_name(response=True)),
+                    'summary': "Summary for {0} event response".format(event.name),
+                    'payload': {
+                        'type': 'object',
+                        'properties': {
+                            'eventName': {
+                                'type': 'string',
+                                'default': event.pascal_name(response=True),
+                                'description': 'Name of the event response',
+                                'x-parser-schema-id': 'eventName'
+                            },
+                            'sentAt': {
+                                'type': 'string',
+                                'format': 'date-time',
+                                'default': 'now()',
+                                'description': 'Date and time when the message was sent',
+                                'x-parser-schema-id': 'sentAt'
+                            },
+                            'timeToLive': {
+                                'type': 'integer',
+                                'default': 3600,
+                                'description': 'Time to live for the message',
+                                'x-parser-schema-id': 'timeToLive'
+                            }
+                            # 'payload': {
+                            #     '$ref': '#/components/schemas/{0}'.format(event.pascal_name(response=True))
+                            # }
+                        }
+                    }
+                }
         if event in service.publishes.all():
             configuration['channels'][channel_key]['subscribe'] = {
                 'summary': "{0}".format(event.name),
-                'operationId': "{1}{0}".format(event.pascal_name(), 'subscribe'),
+                'operationId': "{1}{0}".format(event.pascal_name(response=True), 'subscribe'),
                 # 'traits': "", #$ref: '#/components/operationTraits/kafka'
                 'message': {
                     '$ref': '#/components/messages/{0}'.format(event.pascal_name())
                 }
             }
+            if event.response_payload is not None:
+                # append response message to event
+                configuration['channels'][channel_key]['subscribe']['x-response-message'] = {
+                    '$ref': '#/components/messages/{0}'.format(event.pascal_name(response=True))
+                }
+                configuration['channels'][channel_key]['subscribe']['x-response-channel'] = "{0}.{1}".format(
+                    service.project.slug_name,
+                    event.slug_name(with_params=True, response=True))
+                # change channel key to response channel
+                channel_key = "{0}.{1}".format(service.project.slug_name,
+                                               event.slug_name(with_params=True, response=True))
+                configuration['channels'][channel_key] = {
+                    'description': "{0} {1} channel".format(event.domain.project.name, event.name),
+                    'x-response-of-channel': "{0}.{1}".format(service.project.slug_name,
+                                                              event.slug_name(with_params=True))
+                }
+                configuration['channels'][channel_key]['publish'] = {
+                    'summary': "{0}".format(event.name),
+                    'operationId': "{1}{0}".format(event.pascal_name(response=True), 'publish'),
+                    # 'traits': "", #$ref: '#/components/operationTraits/kafka'
+                    'message': {
+                        '$ref': '#/components/messages/{0}'.format(event.pascal_name(response=True))
+                    }
+                }
+                configuration['components']['messages'][event.pascal_name(response=True)] = {
+                    'name': "{0}".format(event.pascal_name(response=True)),
+                    'title': "{0}".format(event.pascal_name(response=True)),
+                    'summary': "Summary for {0} event response".format(event.name),
+                    'payload': {
+                        'type': 'object',
+                        'properties': {
+                            'eventName': {
+                                'type': 'string',
+                                'default': event.pascal_name(response=True),
+                                'description': 'Name of the event response',
+                                'x-parser-schema-id': 'eventName'
+                            },
+                            'sentAt': {
+                                'type': 'string',
+                                'format': 'date-time',
+                                'default': 'now()',
+                                'description': 'Date and time when the message was sent',
+                                'x-parser-schema-id': 'sentAt'
+                            },
+                            'timeToLive': {
+                                'type': 'integer',
+                                'default': 3600,
+                                'description': 'Time to live for the message',
+                                'x-parser-schema-id': 'timeToLive'
+                            }
+                            # 'payload': {
+                            #     '$ref': '#/components/schemas/{0}'.format(event.pascal_name(response=True))
+                            # }
+                        }
+                    }
+                }
 
         configuration['components']['messages'][event.pascal_name()] = {
             'name': "{0}".format(event.pascal_name()),
@@ -156,8 +259,17 @@ def generate_full_yaml(request, service_id):
             configuration['components']['messages'][event.pascal_name()]['payload']['properties']['data'] = {
                 '$ref': '#/components/schemas/{0}'.format(event.payload.name)
             }
+        if event.response_payload is not None:
+            configuration['components']['messages'][event.pascal_name(response=True)]['payload']['properties'][
+                'data'] = {
+                '$ref': '#/components/schemas/{0}'.format(event.response_payload.name)
+            }
 
-    for payload in Payload.objects.filter(Q(event__in=service.consumes.all()) | Q(event__in=service.publishes.all())):
+    for payload in Payload.objects.filter(
+            Q(event__in=service.consumes.all()) |
+            Q(event__in=service.publishes.all()) |
+            Q(response_of_event__in=service.publishes.all())
+    ):
         properties = {}
         for field in payload.field_set.all():
             if field.type.custom_type:

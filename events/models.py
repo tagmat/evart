@@ -15,23 +15,23 @@ class Event(models.Model):
     domain = models.ForeignKey("Domain", on_delete=models.CASCADE)
     payload = models.ForeignKey("Payload", null=True, blank=True, on_delete=models.SET_NULL)
     response_payload = models.ForeignKey("Payload", null=True, blank=True, on_delete=models.SET_NULL,
-                                         related_name="response_payload")
+                                         related_name="response_of_event")
     type = models.ForeignKey("EventType", default=1, on_delete=models.CASCADE)
 
     def __str__(self):
         return "{0}/{1} [{2}]".format(self.domain.name, self.name, self.type.name)
 
-    def pascal_name(self, with_params=False):
+    def pascal_name(self, with_params=False, response=False):
         name = self.name if with_params else re.sub(r"\[(.*?)\]", "",
                                                     re.sub(r"\.\[(.*?)\]", "", self.name))
-        return "%s%s" % (name[0].upper(), name[1:])
+        return "%s%s%s" % (name[0].upper(), name[1:], 'Response' if response else '')
 
-    def slug_name(self, with_params=False):
+    def slug_name(self, with_params=False, response=False):
         return "{0}.{2}.{1}".format(
             self.domain.name.replace("/", "_"),
             self.name if with_params else re.sub(r"\[(.*?)\]", "",
                                                  re.sub(r"\.\[(.*?)\]", "", self.name)),
-            self.type.name.lower())
+            self.type.name.lower() if not response else "response")
 
 
 class Domain(models.Model):
