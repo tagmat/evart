@@ -237,6 +237,12 @@ def generate_full_yaml(request, service_id):
                         'description': 'Name of the event',
                         'x-parser-schema-id': 'eventName'
                     },
+                    'from': {
+                        'type': 'string',
+                        'default': '',
+                        'description': 'ServiceID of the service that sent the event',
+                        'x-parser-schema-id': 'from'
+                    },
                     'sentAt': {
                         'type': 'string',
                         'format': 'date-time',
@@ -271,6 +277,7 @@ def generate_full_yaml(request, service_id):
             Q(response_of_event__in=service.publishes.all())
     ):
         properties = {}
+        required = []
         for field in payload.field_set.all():
             if field.type.custom_type:
                 if field.type.enum_choices is not None:
@@ -299,15 +306,19 @@ def generate_full_yaml(request, service_id):
                 properties[field.name] = {
                     'type': field.type.type,
                     # 'format': field.type.format
-                    # 'description': field.description
+                    'description': field.description
                 }
 
                 if field.type.format is not None:
                     properties[field.name]['format'] = field.type.format
 
+            if field.required:
+                required.append(field.name)
+
         configuration['components']['schemas'][payload.name] = {
             'type': 'object',
             'properties': properties,
+            'required': required,
             'x-parser-schema-id': payload.name
         }
 
