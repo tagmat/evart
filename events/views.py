@@ -274,7 +274,8 @@ def generate_full_yaml(request, service_id):
     for payload in Payload.objects.filter(
             Q(event__in=service.consumes.all()) |
             Q(event__in=service.publishes.all()) |
-            Q(response_of_event__in=service.publishes.all())
+            Q(response_of_event__in=service.publishes.all()) |
+            Q(response_of_event__in=service.consumes.all())
     ):
         properties = {}
         required = []
