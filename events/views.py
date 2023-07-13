@@ -306,8 +306,10 @@ def generate_full_yaml(request, service_id):
                 properties[field.name] = {
                     'type': field.type.type,
                     # 'format': field.type.format
-                    'description': field.description
                 }
+
+                if field.description is not None:
+                    properties[field.name]['description'] = field.description
 
                 if field.type.format is not None:
                     properties[field.name]['format'] = field.type.format
