@@ -237,11 +237,11 @@ def generate_full_yaml(request, service_id):
                         'description': 'Name of the event',
                         'x-parser-schema-id': 'eventName'
                     },
-                    'from': {
+                    'fromService': {
                         'type': 'string',
                         'default': '',
                         'description': 'ServiceID of the service that sent the event',
-                        'x-parser-schema-id': 'from'
+                        'x-parser-schema-id': 'fromService'
                     },
                     'sentAt': {
                         'type': 'string',
