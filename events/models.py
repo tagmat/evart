@@ -17,6 +17,7 @@ class Event(models.Model):
     response_payload = models.ForeignKey("Payload", null=True, blank=True, on_delete=models.SET_NULL,
                                          related_name="response_of_event")
     type = models.ForeignKey("EventType", default=1, on_delete=models.CASCADE)
+    is_sync = models.BooleanField(default=True)
 
     def __str__(self):
         return "{0}/{1} [{2}]".format(self.domain.name, self.name, self.type.name)
@@ -25,6 +26,11 @@ class Event(models.Model):
         name = self.name if with_params else re.sub(r"\[(.*?)\]", "",
                                                     re.sub(r"\.\[(.*?)\]", "", self.name))
         return "%s%s%s" % (name[0].upper(), name[1:], 'Response' if response else '')
+
+    def camel_name(self, with_params=False, response=False):
+        name = self.name if with_params else re.sub(r"\[(.*?)\]", "",
+                                                    re.sub(r"\.\[(.*?)\]", "", self.name))
+        return "%s%s%s" % (name[0].lower(), name[1:], 'Response' if response else '')
 
     def slug_name(self, with_params=False, response=False):
         return "{0}.{2}.{1}".format(
@@ -50,10 +56,32 @@ class Payload(models.Model):
         return self.name
 
 
+class DatabasePayload(models.Model):
+    project = models.ForeignKey("Project", on_delete=models.CASCADE)
+    name = models.CharField(max_length=200)
+    create_rest = models.BooleanField(default=False)
+
+    def __str__(self):
+        return self.name
+
+
 class Field(models.Model):
     name = models.CharField(max_length=200)
     type = models.ForeignKey("FieldType", on_delete=models.RESTRICT)
     payload = models.ForeignKey("Payload", on_delete=models.CASCADE)
+    required = models.BooleanField(default=False)
+    minimum = models.IntegerField(blank=True, null=True)
+    maximum = models.IntegerField(blank=True, null=True)
+    description = models.CharField(max_length=200, blank=True, null=True)
+
+    def __str__(self):
+        return self.name
+
+
+class DatabaseField(models.Model):
+    name = models.CharField(max_length=200)
+    type = models.ForeignKey("FieldType", on_delete=models.RESTRICT)
+    payload = models.ForeignKey("DatabasePayload", on_delete=models.CASCADE)
     required = models.BooleanField(default=False)
     minimum = models.IntegerField(blank=True, null=True)
     maximum = models.IntegerField(blank=True, null=True)
@@ -81,38 +109,28 @@ class Service(models.Model):
     project = models.ForeignKey("Project", on_delete=models.CASCADE)
     name = models.CharField(max_length=200)
     slug_name = models.CharField(max_length=200)
-    asyncapi_version = models.CharField(max_length=20, default="2.6.0")
+    asyncapi_version = models.CharField(max_length=20, default="3.0.0")  # Updated to 3.0.0
     version = models.CharField(max_length=20, default="1.0.0")
     description = models.TextField(max_length=1000, default='Service description')
     consumes = models.ManyToManyField("Event", related_name="event_consumers", blank=True)
     publishes = models.ManyToManyField("Event", related_name="event_publishers", blank=True)
+    database_payloads = models.ManyToManyField("DatabasePayload", related_name="service_payloads", blank=True)
 
     def __str__(self):
         return self.name
 
+    def kebab_name(self):
+        return '-'.join(
+            re.sub(r"(\s|_|-)+", " ",
+                   re.sub(r"[A-Z]{2,}(?=[A-Z][a-z]+[0-9]*|\b)|[A-Z]?[a-z]+[0-9]*|[A-Z]|[0-9]+",
+                    lambda mo: ' ' + mo.group(0).lower(), self.name)).split())
 
-class GrpcPackage(models.Model):
+class DatabaseTables(models.Model):
+    project = models.ForeignKey("Project", on_delete=models.CASCADE)
     name = models.CharField(max_length=200)
-    service = models.OneToOneField("Service", on_delete=models.CASCADE)
-    syntax = models.CharField(max_length=20, default="proto3")
-
-    def __str__(self):
-        return self.name
-
-    @property
-    def service_name(self):
-        return "%s%sService" % (self.name[0].upper(), self.name[1:])
-
-
-class GrpcService(models.Model):
-    name = models.CharField(max_length=200)
-    package = models.ForeignKey("GrpcPackage", on_delete=models.CASCADE)
-    request = models.ForeignKey("Payload", verbose_name="Request Payload", on_delete=models.CASCADE,
-                                related_name="grpc_request_payload", null=True,
-                                blank=True)
-    response = models.ForeignKey("Payload", verbose_name="Response Payload", on_delete=models.CASCADE,
-                                 related_name="grpc_response_payload", null=True,
-                                 blank=True)
+    slug_name = models.CharField(max_length=200)
+    description = models.TextField(max_length=1000, default='Table description')
+    fields = models.ManyToManyField("Field", related_name="table_fields", blank=True)
 
     def __str__(self):
         return self.name
