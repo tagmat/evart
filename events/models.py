@@ -18,6 +18,7 @@ class Event(models.Model):
                                          related_name="response_of_event")
     type = models.ForeignKey("EventType", default=1, on_delete=models.CASCADE)
     is_sync = models.BooleanField(default=True)
+    endpoint = models.CharField(max_length=200, blank=True, null=True)
 
     def __str__(self):
         return "{0}/{1} [{2}]".format(self.domain.name, self.name, self.type.name)

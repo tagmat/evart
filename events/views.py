@@ -69,8 +69,7 @@ def generate_full_yaml(request, service_id):
                     }
                 ],
                 'x-operation-name': "{0}".format(event.camel_name()),
-                'x-action-name': "get"
-
+                'x-endpoint': event.endpoint,
             }
         if event in service.publishes.all():
             configuration['operations']['send{0}'.format(channel_key)] = {
