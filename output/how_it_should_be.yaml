@@ -1,0 +1,850 @@
+asyncapi: 3.0.0
+info:
+  title: Electrinn V2 Client Service
+  version: 1.0.0
+  description: Electrinn V2 Client Service - User Authentication and Management
+  x-general-name: client
+  x-service-name: client
+  x-service-ip: change-this
+servers:
+  test:
+    host: 127.0.0.1:9092
+    protocol: kafka-secure
+    description: Test broker
+channels:
+  RequestOTP:
+    description: Request OTP for login or user creation
+    x-is-sync: true
+    address: "requestOTP"
+    summary: Request OTP for login or user creation for web and mobile
+    messages:
+      RequestOTP:
+        $ref: "#/components/messages/RequestOTP"
+  RequestOTPResponse:
+    description: Request OTP response
+    x-is-sync: true
+    address: "requestOTPResponse"
+    summary: Request OTP response for web and mobile
+    messages:
+      RequestOTPResponse:
+        $ref: "#/components/messages/RequestOTPResponse"
+  VerifyOTP:
+    description: Verify OTP and login or create user
+    x-is-sync: true
+    address: "verifyOTP"
+    summary: Verify OTP and login or create user for web and mobile
+    messages:
+      VerifyOTP:
+        $ref: "#/components/messages/VerifyOTP"
+  VerifyOTPResponse:
+    description: Verify OTP response
+    x-is-sync: true
+    address: "verifyOTPResponse"
+    summary: Verify OTP response for web and mobile
+    messages:
+      VerifyOTPResponse:
+        $ref: "#/components/messages/VerifyOTPResponse"
+  AddUserInvoiceInfo:
+    description: Add invoice information to user
+    x-is-sync: true
+    address: "addUserInvoiceInfo"
+    summary: Add invoice information to user for web and mobile
+    messages:
+      AddUserInvoiceInfo:
+        $ref: "#/components/messages/AddUserInvoiceInfo"
+  AddUserInvoiceInfoResponse:
+    description: Add invoice information to user response
+    x-is-sync: true
+    address: "addUserInvoiceInfoResponse"
+    summary: Add invoice information to user response for web and mobile
+    messages:
+      AddUserInvoiceInfoResponse:
+        $ref: "#/components/messages/AddUserInvoiceInfoResponse"
+  AddUserPaymentInfo:
+    description: Add payment information to user
+    x-is-sync: true
+    address: "addUserPaymentInfo"
+    summary: Add payment information to user for web and mobile
+    messages:
+      AddUserPaymentInfo:
+        $ref: "#/components/messages/AddUserPaymentInfo"
+  AddUserPaymentInfoResponse:
+    description: Add payment information to user response
+    x-is-sync: true
+    address: "addUserPaymentInfoResponse"
+    summary: Add payment information to user response for web and mobile
+    messages:
+      AddUserPaymentInfoResponse:
+        $ref: "#/components/messages/AddUserPaymentInfoResponse"
+operations:
+  receiveRequestOTP:
+    action: receive
+    channel:
+      $ref: "#/channels/RequestOTP"
+    messages:
+      - $ref: "#/channels/RequestOTP/messages/RequestOTP"
+    x-operation-name: RequestOTP
+    x-endpoint: "/RequestOTP"
+  sendRequestOTPResponse:
+    action: send
+    channel:
+      $ref: "#/channels/RequestOTPResponse"
+    messages:
+      - $ref: "#/channels/RequestOTPResponse/messages/RequestOTPResponse"
+    x-operation-name: RequestOTPResponse
+    x-endpoint: "/RequestOTPResponse"
+    x-create-endpoint: true
+  receiveVerifyOTP:
+    action: receive
+    channel:
+      $ref: "#/channels/VerifyOTP"
+    messages:
+      - $ref: "#/channels/VerifyOTP/messages/VerifyOTP"
+    x-operation-name: VerifyOTP
+    x-endpoint: "/VerifyOTP"
+  sendVerifyOTPResponse:
+    action: send
+    channel:
+      $ref: "#/channels/VerifyOTPResponse"
+    messages:
+      - $ref: "#/channels/VerifyOTPResponse/messages/VerifyOTPResponse"
+    x-operation-name: VerifyOTPResponse
+    x-endpoint: "/VerifyOTPResponse"
+    x-create-endpoint: true
+  receiveAddUserInvoiceInfo:
+    action: receive
+    channel:
+      $ref: "#/channels/AddUserInvoiceInfo"
+    messages:
+      - $ref: "#/channels/AddUserInvoiceInfo/messages/AddUserInvoiceInfo"
+    x-operation-name: AddUserInvoiceInfo
+    x-endpoint: "/AddUserInvoiceInfo"
+  sendAddUserInvoiceInfoResponse:
+    action: send
+    channel:
+      $ref: "#/channels/AddUserInvoiceInfoResponse"
+    messages:
+      - $ref: "#/channels/AddUserInvoiceInfoResponse/messages/AddUserInvoiceInfoResponse"
+    x-operation-name: AddUserInvoiceInfoResponse
+    x-endpoint: "/AddUserInvoiceInfoResponse"
+    x-create-endpoint: true
+
+  receiveAddUserPaymentInfo:
+    action: receive
+    channel:
+      $ref: "#/channels/AddUserPaymentInfo"
+    messages:
+      - $ref: "#/channels/AddUserPaymentInfo/messages/AddUserPaymentInfo"
+    x-operation-name: AddUserPaymentInfo
+    x-endpoint: "/AddUserPaymentInfo"
+
+  sendAddUserPaymentInfoResponse:
+    action: send
+    channel:
+      $ref: "#/channels/AddUserPaymentInfoResponse"
+    messages:
+      - $ref: "#/channels/AddUserPaymentInfoResponse/messages/AddUserPaymentInfoResponse"
+    x-operation-name: AddUserPaymentInfoResponse
+    x-endpoint: "/AddUserPaymentInfoResponse"
+    x-create-endpoint: true
+components:
+  messages:
+    RequestOTP:
+      name: RequestOTP
+      title: Request OTP
+      summary: Request OTP for login or user creation for web and mobile
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/RequestOTPPayload"
+    RequestOTPResponse:
+      name: RequestOTPResponse
+      title: Request OTP Response
+      summary: Request OTP response for web and mobile
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/RequestOTPResponsePayload"
+    VerifyOTP:
+      name: VerifyOTP
+      title: Verify OTP
+      summary: Verify OTP and login or create user for web and mobile
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/VerifyOTPPayload"
+    VerifyOTPResponse:
+      name: VerifyOTPResponse
+      title: Verify OTP Response
+      summary: Verify OTP response for web and mobile
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/VerifyOTPResponsePayload"
+    AddUserInvoiceInfo:
+      name: AddUserInvoiceInfo
+      title: Add User Invoice Info
+      summary: Add invoice information to user for web and mobile
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/AddUserInvoiceInfoPayload"
+    AddUserInvoiceInfoResponse:
+      name: AddUserInvoiceInfoResponse
+      title: Add User Invoice Info Response
+      summary: Add invoice information to user response for web and mobile
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/AddUserInvoiceInfoResponsePayload"
+    AddUserPaymentInfo:
+      name: AddUserPaymentInfo
+      title: Add User Payment Info
+      summary: Add payment information to user for web and mobile
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/AddUserPaymentInfoPayload"
+    AddUserPaymentInfoResponse:
+      name: AddUserPaymentInfoResponse
+      title: Add User Payment Info Response
+      summary: Add payment information to user response for web and mobile
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/AddUserPaymentInfoResponsePayload"
+  schemas:
+    RequestOTPPayload:
+      type: object
+      properties:
+        fromService:
+          type: string
+          default: ""
+          description: ServiceID and name of the service that sent the event
+          x-parser-schema-id: fromService
+        sentAt:
+          type: string
+          format: date-time
+          default: "2025-01-01T00:00:00Z"
+          description: Date and time when the message was sent
+          x-parser-schema-id: sentAt
+        timeToLive:
+          type: integer
+          default: 3600000
+          description: Message time to live in milliseconds
+          x-parser-schema-id: timeToLive
+        data:
+          $ref: "#/components/schemas/Data_RequestOTPPayload"
+    Data_RequestOTPPayload:
+      type: object
+      properties:
+        phoneNumber:
+          type: string
+          description: User phone number
+        platform:
+          type: string
+          enum: ["web", "mobile"]
+          description: Platform type (web or mobile)
+        deviceInfo:
+          type: string
+          description: Device information (optional)
+    RequestOTPResponsePayload:
+      type: object
+      properties:
+        fromService:
+          type: string
+          default: ""
+          description: ServiceID and name of the service that sent the event
+          x-parser-schema-id: fromService
+        sentAt:
+          type: string
+          format: date-time
+          default: "2025-01-01T00:00:00Z"
+          description: Date and time when the message was sent
+          x-parser-schema-id: sentAt
+        timeToLive:
+          type: integer
+          default: 3600000
+          description: Message time to live in milliseconds
+          x-parser-schema-id: timeToLive
+        data:
+          $ref: "#/components/schemas/Data_RequestOTPResponsePayload"
+    Data_RequestOTPResponsePayload:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether OTP was sent successfully
+        otpSent:
+          type: boolean
+          description: Whether OTP was sent to phone
+        userExists:
+          type: boolean
+          description: Whether user already exists
+        message:
+          type: string
+          description: Response message
+        otpExpiryMinutes:
+          type: integer
+          description: OTP expiry time in minutes
+        errorType:
+          type: string
+          description: Error type if any
+        errorMessage:
+          type: string
+          description: Error message if any
+    VerifyOTPPayload:
+      type: object
+      properties:
+        fromService:
+          type: string
+          default: ""
+          description: ServiceID and name of the service that sent the event
+          x-parser-schema-id: fromService
+        sentAt:
+          type: string
+          format: date-time
+          default: "2025-01-01T00:00:00Z"
+          description: Date and time when the message was sent
+          x-parser-schema-id: sentAt
+        timeToLive:
+          type: integer
+          default: 3600000
+          description: Message time to live in milliseconds
+          x-parser-schema-id: timeToLive
+        data:
+          $ref: "#/components/schemas/Data_VerifyOTPPayload"
+    Data_VerifyOTPPayload:
+      type: object
+      properties:
+        phoneNumber:
+          type: string
+          description: User phone number
+        otpCode:
+          type: string
+          description: OTP verification code
+        firstName:
+          type: string
+          description: User first name (required for new users)
+        lastName:
+          type: string
+          description: User last name (required for new users)
+        password:
+          type: string
+          description: User password (required for new users)
+        platform:
+          type: string
+          enum: ["web", "mobile"]
+          description: Platform type (web or mobile)
+        deviceInfo:
+          type: string
+          description: Device information (optional)
+    VerifyOTPResponsePayload:
+      type: object
+      properties:
+        fromService:
+          type: string
+          default: ""
+          description: ServiceID and name of the service that sent the event
+          x-parser-schema-id: fromService
+        sentAt:
+          type: string
+          format: date-time
+          default: "2025-01-01T00:00:00Z"
+          description: Date and time when the message was sent
+          x-parser-schema-id: sentAt
+        timeToLive:
+          type: integer
+          default: 3600000
+          description: Message time to live in milliseconds
+          x-parser-schema-id: timeToLive
+        data:
+          $ref: "#/components/schemas/Data_VerifyOTPResponsePayload"
+    Data_VerifyOTPResponsePayload:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether OTP verification was successful
+        userExists:
+          type: boolean
+          description: Whether user already existed
+        userCreated:
+          type: boolean
+          description: Whether new user was created
+        userID:
+          type: number
+          description: User ID
+        userNumber:
+          type: string
+          description: User number
+        accessToken:
+          type: string
+          description: Access token for authenticated session
+        refreshToken:
+          type: string
+          description: Refresh token for session renewal
+        message:
+          type: string
+          description: Response message
+        errorType:
+          type: string
+          description: Error type if any
+        errorMessage:
+          type: string
+          description: Error message if any
+    AddUserInvoiceInfoPayload:
+      type: object
+      properties:
+        fromService:
+          type: string
+          default: ""
+          description: ServiceID and name of the service that sent the event
+          x-parser-schema-id: fromService
+        sentAt:
+          type: string
+          format: date-time
+          default: "2025-01-01T00:00:00Z"
+          description: Date and time when the message was sent
+          x-parser-schema-id: sentAt
+        timeToLive:
+          type: integer
+          default: 3600000
+          description: Message time to live in milliseconds
+          x-parser-schema-id: timeToLive
+        data:
+          $ref: "#/components/schemas/Data_AddUserInvoiceInfoPayload"
+    Data_AddUserInvoiceInfoPayload:
+      type: object
+      properties:
+        userID:
+          type: number
+          description: User ID
+        addressTitle:
+          type: string
+          description: Address title
+        addressLine1:
+          type: string
+          description: Address line 1
+        addressLine2:
+          type: string
+          description: Address line 2
+        city:
+          type: string
+          description: City
+        country:
+          type: string
+          description: Country
+        province:
+          type: string
+          description: Province/State
+        postalCode:
+          type: string
+          description: Postal code
+        taxOffice:
+          type: string
+          description: Tax office (optional)
+        taxNumber:
+          type: string
+          description: Tax number (optional)
+        platform:
+          type: string
+          enum: ["web", "mobile"]
+          description: Platform type (web or mobile)
+    AddUserInvoiceInfoResponsePayload:
+      type: object
+      properties:
+        fromService:
+          type: string
+          default: ""
+          description: ServiceID and name of the service that sent the event
+          x-parser-schema-id: fromService
+        sentAt:
+          type: string
+          format: date-time
+          default: "2025-01-01T00:00:00Z"
+          description: Date and time when the message was sent
+          x-parser-schema-id: sentAt
+        timeToLive:
+          type: integer
+          default: 3600000
+          description: Message time to live in milliseconds
+          x-parser-schema-id: timeToLive
+        data:
+          $ref: "#/components/schemas/Data_AddUserInvoiceInfoResponsePayload"
+    Data_AddUserInvoiceInfoResponsePayload:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether invoice information was added successfully
+        invoiceInfoAdded:
+          type: boolean
+          description: Whether invoice information was added
+        message:
+          type: string
+          description: Response message
+        errorType:
+          type: string
+          description: Error type if any
+        errorMessage:
+          type: string
+          description: Error message if any
+    AddUserPaymentInfoPayload:
+      type: object
+      properties:
+        fromService:
+          type: string
+          default: ""
+          description: ServiceID and name of the service that sent the event
+          x-parser-schema-id: fromService
+        sentAt:
+          type: string
+          format: date-time
+          default: "2025-01-01T00:00:00Z"
+          description: Date and time when the message was sent
+          x-parser-schema-id: sentAt
+        timeToLive:
+          type: integer
+          default: 3600000
+          description: Message time to live in milliseconds
+          x-parser-schema-id: timeToLive
+        data:
+          $ref: "#/components/schemas/Data_AddUserPaymentInfoPayload"
+    Data_AddUserPaymentInfoPayload:
+      type: object
+      properties:
+        userID:
+          type: number
+          description: User ID
+        cardNumber:
+          type: string
+          description: Card number
+        cardExpiryMonth:
+          type: number
+          description: Card expiry month
+        cardExpiryYear:
+          type: number
+          description: Card expiry year
+        cardCvc:
+          type: string
+          description: Card CVC
+        platform:
+          type: string
+          enum: ["web", "mobile"]
+          description: Platform type (web or mobile)
+    AddUserPaymentInfoResponsePayload:
+      type: object
+      properties:
+        fromService:
+          type: string
+          default: ""
+          description: ServiceID and name of the service that sent the event
+          x-parser-schema-id: fromService
+        sentAt:
+          type: string
+          format: date-time
+          default: "2025-01-01T00:00:00Z"
+          description: Date and time when the message was sent
+          x-parser-schema-id: sentAt
+        timeToLive:
+          type: integer
+          default: 3600000
+          description: Message time to live in milliseconds
+          x-parser-schema-id: timeToLive
+        data:
+          $ref: "#/components/schemas/Data_AddUserPaymentInfoResponsePayload"
+    Data_AddUserPaymentInfoResponsePayload:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether payment information was added successfully
+        paymentInfoAdded:
+          type: boolean
+          description: Whether payment information was added
+        message:
+          type: string
+          description: Response message
+        errorType:
+          type: string
+          description: Error type if any
+        errorMessage:
+          type: string
+          description: Error message if any
+
+    # Database Schemas
+    DB_User:
+      type: object
+      x-parser-schema-id: User
+      x-create-rest: false
+      properties:
+        id:
+          type: number
+          x-type: int64
+          x-unique: true
+          x-index: true
+          description: User ID
+        userNumber:
+          type: string
+          x-type: string
+          x-unique: true
+          x-index: true
+          description: Randomly assigned user number
+        phoneNumber:
+          type: string
+          x-type: string
+          x-unique: true
+          x-index: true
+          description: User phone number (primary login identifier)
+        passwordHash:
+          type: string
+          x-type: string
+          description: Hashed password
+        firstName:
+          type: string
+          x-type: string
+          description: User first name
+        lastName:
+          type: string
+          x-type: string
+          description: User last name
+        email:
+          type: string
+          x-type: string
+          x-index: true
+          description: User email (optional, for future use)
+        isActive:
+          type: boolean
+          x-type: boolean
+          default: true
+          description: Whether user account is active
+        createdAt:
+          type: string
+          format: date-time
+          x-type: datetime
+          description: Account creation timestamp
+        lastLoginAt:
+          type: string
+          format: date-time
+          x-type: datetime
+          description: Last login timestamp
+        loginAttempts:
+          type: number
+          x-type: int64
+          default: 0
+          description: Number of failed login attempts
+        lockedUntil:
+          type: string
+          format: date-time
+          x-type: datetime
+          description: Account lock expiration (if locked)
+
+    DB_UserProfile:
+      type: object
+      x-parser-schema-id: UserProfile
+      x-create-rest: false
+      x-derives-from: User
+      properties:
+        id:
+          type: number
+          x-type: int64
+          x-unique: true
+          x-index: true
+          description: User Profile ID
+        userID:
+          type: number
+          x-type: int64
+          x-index: true
+          description: Reference to User ID
+        user:
+          type: object
+          x-relation-schema-id: DB_User
+          x-type: object
+          description: Reference to User model    
+        turkishNationalNumber:
+          type: string
+          x-type: string
+          x-unique: true
+          x-index: true
+          description: Turkish National Number (TC Kimlik No)
+        passportNumber:
+          type: string
+          x-type: string
+          x-unique: true
+          x-index: true
+          description: Passport number (alternative to TC)
+        phoneNumber:
+          type: string
+          x-type: string
+          description: Phone number
+        address:
+          type: string
+          x-type: string
+          description: User address
+        city:
+          type: string
+          x-type: string
+          description: City
+        country:
+          type: string
+          x-type: string
+          description: Country
+        postalCode:
+          type: string
+          x-type: string
+          description: Postal code
+        dateOfBirth:
+          type: string
+          format: date
+          x-type: date
+          description: Date of birth
+        gender:
+          type: string
+          x-type: string
+          description: Gender
+        isVerified:
+          type: boolean
+          x-type: boolean
+          default: false
+          description: Whether profile is verified
+        verificationDate:
+          type: string
+          format: date-time
+          x-type: datetime
+          description: Profile verification timestamp
+        updatedAt:
+          type: string
+          format: date-time
+          x-type: datetime
+          description: Last profile update timestamp
+
+    DB_Permission:
+      type: object
+      x-parser-schema-id: Permission
+      x-create-rest: false
+      properties:
+        id:
+          type: number
+          x-type: int64
+          x-unique: true
+          x-index: true
+          description: Permission ID
+        name:
+          type: string
+          x-type: string
+          x-unique: true
+          x-index: true
+          description: Permission name (e.g., 'user.read', 'payment.create')
+        description:
+          type: string
+          x-type: string
+          description: Permission description
+        resource:
+          type: string
+          x-type: string
+          x-index: true
+          description: Resource this permission applies to (e.g., 'user', 'payment')
+        action:
+          type: string
+          x-type: string
+          x-index: true
+          description: Action this permission allows (e.g., 'read', 'write', 'delete')
+        createdAt:
+          type: string
+          format: date-time
+          x-type: datetime
+          description: Permission creation timestamp
+
+    DB_PermissionGroup:
+      type: object
+      x-parser-schema-id: PermissionGroup
+      x-create-rest: false
+      properties:
+        id:
+          type: number
+          x-type: int64
+          x-unique: true
+          x-index: true
+          description: Permission Group ID
+        name:
+          type: string
+          x-type: string
+          x-unique: true
+          x-index: true
+          description: Permission group name (e.g., 'admin', 'user', 'merchant')
+        description:
+          type: string
+          x-type: string
+          description: Permission group description
+        createdAt:
+          type: string
+          format: date-time
+          x-type: datetime
+          description: Permission group creation timestamp
+
+    DB_UserPermission:
+      type: object
+      x-parser-schema-id: UserPermission
+      x-create-rest: false
+      properties:
+        id:
+          type: number
+          x-type: int64
+          x-unique: true
+          x-index: true
+          description: User Permission ID
+        userID:
+          type: number
+          x-type: int64
+          x-index: true
+          description: Reference to User ID
+        permissionID:
+          type: number
+          x-type: int64
+          x-index: true
+          description: Reference to Permission ID
+        grantedAt:
+          type: string
+          format: date-time
+          x-type: datetime
+          description: When permission was granted
+        grantedBy:
+          type: number
+          x-type: int64
+          x-index: true
+          description: User ID who granted this permission
+        isActive:
+          type: boolean
+          x-type: boolean
+          default: true
+          description: Whether this permission grant is active
+
+    DB_UserPermissionGroup:
+      type: object
+      x-parser-schema-id: UserPermissionGroup
+      x-create-rest: false
+      properties:
+        id:
+          type: number
+          x-type: int64
+          x-unique: true
+          x-index: true
+          description: User Permission Group ID
+        userID:
+          type: number
+          x-type: int64
+          x-index: true
+          description: Reference to User ID
+        permissionGroupID:
+          type: number
+          x-type: int64
+          x-index: true
+          description: Reference to Permission Group ID
+        assignedAt:
+          type: string
+          format: date-time
+          x-type: datetime
+          description: When permission group was assigned
+        assignedBy:
+          type: number
+          x-type: int64
+          x-index: true
+          description: User ID who assigned this permission group
+        isActive:
+          type: boolean
+          x-type: boolean
+          default: true
+          description: Whether this permission group assignment is active

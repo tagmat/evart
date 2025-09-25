@@ -61,6 +61,10 @@ class DatabasePayload(models.Model):
     project = models.ForeignKey("Project", on_delete=models.CASCADE)
     name = models.CharField(max_length=200)
     create_rest = models.BooleanField(default=False)
+    
+    # Database-specific properties
+    x_parser_schema_id = models.CharField(max_length=200, blank=True, null=True, help_text="Parser schema ID")
+    x_derives_from = models.CharField(max_length=200, blank=True, null=True, help_text="Schema this derives from")
 
     def __str__(self):
         return self.name
@@ -87,6 +91,13 @@ class DatabaseField(models.Model):
     minimum = models.IntegerField(blank=True, null=True)
     maximum = models.IntegerField(blank=True, null=True)
     description = models.CharField(max_length=200, blank=True, null=True)
+    
+    # Database-specific properties
+    x_type = models.CharField(max_length=200, blank=True, null=True, help_text="Database type (e.g., int64, string, boolean)")
+    x_unique = models.BooleanField(default=False, help_text="Whether this field is unique")
+    x_index = models.BooleanField(default=False, help_text="Whether this field is indexed")
+    default_value = models.TextField(blank=True, null=True, help_text="Default value for this field")
+    x_relation_schema_id = models.CharField(max_length=200, blank=True, null=True, help_text="Reference to another schema for relations")
 
     def __str__(self):
         return self.name

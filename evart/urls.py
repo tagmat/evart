@@ -23,5 +23,6 @@ urlpatterns = [
     path('nested_admin/', include('nested_admin.urls')),
     path('admin/', admin.site.urls),
     path('yaml/<int:service_id>/', events.views.generate_full_yaml, name="download-yaml"),
+    path('events/', include('events.urls')),
     # path('proto/<int:service_id>/', events.views.generate_full_proto, name="download-proto"),
 ]

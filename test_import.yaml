@@ -1,0 +1,30 @@
+asyncapi: 3.0.0
+info:
+  title: Test Service
+  version: 1.0.0
+  description: Test service for import
+channels:
+  TestEvent:
+    description: Test event
+    x-is-sync: true
+    address: "testEvent"
+    summary: Test event for web and mobile
+    messages:
+      TestEvent:
+        $ref: "#/components/messages/TestEvent"
+components:
+  messages:
+    TestEvent:
+      name: TestEvent
+      title: Test Event
+      summary: Test event for web and mobile
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/TestEventPayload"
+  schemas:
+    TestEventPayload:
+      type: object
+      properties:
+        testField:
+          type: string
+          description: Test field

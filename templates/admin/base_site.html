@@ -1,0 +1,30 @@
+{% extends "admin/base.html" %}
+{% load i18n static %}
+
+{% block title %}{{ title }} | {% trans 'Django site admin' %}{% endblock %}
+
+{% block branding %}
+<h1 id="site-name"><a href="{% url 'admin:index' %}">{% trans 'Django administration' %}</a></h1>
+{% endblock %}
+
+{% block nav-breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+{% if title %} &rsaquo; {{ title }}{% endif %}
+</div>
+{% endblock %}
+
+{% block nav-global %}
+<div class="nav-global">
+    <a href="{% url 'import_yaml_page' %}" class="import-yaml-link" style="
+        background-color: #417690;
+        color: white;
+        padding: 10px 15px;
+        text-decoration: none;
+        border-radius: 4px;
+        margin-left: 10px;
+        display: inline-block;
+        font-weight: bold;
+    ">📥 Import YAML</a>
+</div>
+{% endblock %}
