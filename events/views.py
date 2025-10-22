@@ -590,23 +590,206 @@ def parse_yaml_for_preview(yaml_content):
         'db_fields': []
     }
     
-    # Project preview
-    project_slug = re.sub(r'[^a-zA-Z0-9]', '', project_name.lower())[:20]
-    preview_data['projects'].append({
-        'name': project_name,
-        'slug_name': project_slug
-    })
+    # Get existing data for comparison
+    existing_data = {
+        'projects': [],
+        'services': [],
+        'events': [],
+        'payloads': [],
+        'field_types': [],
+        'fields': [],
+        'db_payloads': [],
+        'db_fields': []
+    }
     
-    # Service preview
+    # Get existing projects
+    for project in Project.objects.all():
+        existing_data['projects'].append({
+            'name': project.name,
+            'slug_name': project.slug_name
+        })
+    
+    # Get existing services
+    for service in Service.objects.all():
+        existing_data['services'].append({
+            'name': service.name,
+            'project_name': service.project.name,
+            'slug_name': service.slug_name,
+            'asyncapi_version': service.asyncapi_version,
+            'version': service.version,
+            'description': service.description
+        })
+    
+    # Get existing events
+    for event in Event.objects.all():
+        existing_data['events'].append({
+            'name': event.name,
+            'domain_name': event.domain.name,
+            'type_name': event.type.name,
+            'is_sync': event.is_sync,
+            'is_post': event.is_post,
+            'address': event.address,
+            'endpoint': event.endpoint,
+            'description': event.description,
+            'summary': event.summary,
+            'payload_name': event.payload.name if event.payload else None,
+            'response_payload_name': event.response_payload.name if event.response_payload else None
+        })
+    
+    # Get existing payloads
+    for payload in Payload.objects.all():
+        fields = []
+        for field in payload.field_set.all():
+            fields.append({
+                'name': field.name,
+                'type_name': field.type.name,
+                'required': field.required,
+                'description': field.description,
+                'minimum': field.minimum,
+                'maximum': field.maximum
+            })
+        
+        existing_data['payloads'].append({
+            'name': payload.name,
+            'project_name': payload.project.name,
+            'description': payload.description,
+            'fields': fields
+        })
+    
+    # Get existing field types
+    for field_type in FieldType.objects.all():
+        existing_data['field_types'].append({
+            'name': field_type.name,
+            'type': field_type.type,
+            'custom_type': field_type.custom_type,
+            'format': field_type.format,
+            'max_length': field_type.max_length,
+            'enum_choices': field_type.enum_choices
+        })
+    
+    # Get existing database payloads
+    for db_payload in DatabasePayload.objects.all():
+        fields = []
+        for field in db_payload.databasefield_set.all():
+            fields.append({
+                'name': field.name,
+                'type_name': field.type.name,
+                'required': field.required,
+                'description': field.description,
+                'minimum': field.minimum,
+                'maximum': field.maximum,
+                'x_type': field.x_type,
+                'x_unique': field.x_unique,
+                'x_index': field.x_index,
+                'default_value': field.default_value,
+                'x_relation_schema_id': field.x_relation_schema_id
+            })
+        
+        existing_data['db_payloads'].append({
+            'name': db_payload.name,
+            'project_name': db_payload.project.name,
+            'create_rest': db_payload.create_rest,
+            'x_parser_schema_id': db_payload.x_parser_schema_id,
+            'x_derives_from': db_payload.x_derives_from,
+            'fields': fields
+        })
+    
+    # Get existing database fields
+    for db_field in DatabaseField.objects.all():
+        existing_data['db_fields'].append({
+            'name': db_field.name,
+            'type_name': db_field.type.name,
+            'required': db_field.required,
+            'description': db_field.description,
+            'minimum': db_field.minimum,
+            'maximum': db_field.maximum,
+            'x_type': db_field.x_type,
+            'x_unique': db_field.x_unique,
+            'x_index': db_field.x_index,
+            'default_value': db_field.default_value,
+            'x_relation_schema_id': db_field.x_relation_schema_id
+        })
+    
+    # Get existing standalone fields (not part of payloads)
+    for field in Field.objects.all():
+        existing_data['fields'].append({
+            'name': field.name,
+            'type_name': field.type.name,
+            'required': field.required,
+            'description': field.description,
+            'minimum': field.minimum,
+            'maximum': field.maximum,
+            'payload_name': field.payload.name if field.payload else None,
+            'project_name': field.payload.project.name if field.payload else None
+        })
+    
+    # Project preview - check for exact match
+    project_slug = re.sub(r'[^a-zA-Z0-9]', '', project_name.lower())[:20]
+    project_preview = {
+        'name': project_name,
+        'slug_name': project_slug,
+        'is_existing': False,
+        'existing_match': None,
+        'is_conflict': False,
+        'conflict_match': None,
+        'conflict_reason': None
+    }
+    
+    # Check for exact match or conflict in existing projects
+    for existing_project in existing_data['projects']:
+        if existing_project['name'] == project_name:
+            if existing_project['slug_name'] == project_slug:
+                project_preview['is_existing'] = True
+                project_preview['existing_match'] = existing_project
+            else:
+                project_preview['is_conflict'] = True
+                project_preview['conflict_match'] = existing_project
+                project_preview['conflict_reason'] = f"Slug mismatch: existing='{existing_project['slug_name']}', new='{project_slug}'"
+            break
+    
+    preview_data['projects'].append(project_preview)
+    
+    # Service preview - check for exact match
     service_slug = re.sub(r'[^a-zA-Z0-9]', '', service_name.lower())[:200]
-    preview_data['services'].append({
+    service_preview = {
         'name': service_name,
         'project_name': project_name,
         'slug_name': service_slug,
         'asyncapi_version': yaml_data.get('asyncapi', '3.0.0'),
         'version': info.get('version', '1.0.0'),
-        'description': info.get('description', 'Imported service')
-    })
+        'description': info.get('description', 'Imported service'),
+        'is_existing': False,
+        'existing_match': None,
+        'is_conflict': False,
+        'conflict_match': None,
+        'conflict_reason': None
+    }
+    
+    # Check for exact match or conflict in existing services
+    for existing_service in existing_data['services']:
+        if (existing_service['name'] == service_name and 
+            existing_service['project_name'] == project_name):
+            
+            conflicts = []
+            if existing_service['slug_name'] != service_slug:
+                conflicts.append(f"slug: existing='{existing_service['slug_name']}', new='{service_slug}'")
+            if existing_service['asyncapi_version'] != service_preview['asyncapi_version']:
+                conflicts.append(f"asyncapi_version: existing='{existing_service['asyncapi_version']}', new='{service_preview['asyncapi_version']}'")
+            if existing_service['version'] != service_preview['version']:
+                conflicts.append(f"version: existing='{existing_service['version']}', new='{service_preview['version']}'")
+            if existing_service['description'] != service_preview['description']:
+                conflicts.append(f"description: existing='{existing_service['description']}', new='{service_preview['description']}'")
+            
+            if not conflicts:
+                service_preview['is_existing'] = True
+                service_preview['existing_match'] = existing_service
+            else:
+                service_preview['is_conflict'] = True
+                service_preview['conflict_match'] = existing_service
+                service_preview['conflict_reason'] = "; ".join(conflicts)
+            break
+    
+    preview_data['services'].append(service_preview)
     
     # Process channels and create event previews
     channels = yaml_data.get('channels', {})
@@ -642,7 +825,7 @@ def parse_yaml_for_preview(yaml_content):
                         else:
                             request_payload_name = payload_name
         
-        # Create event preview
+        # Create event preview - check for exact match
         event_preview = {
             'name': event_snake_name,
             'domain_name': 'default',
@@ -654,8 +837,45 @@ def parse_yaml_for_preview(yaml_content):
             'description': channel_data.get('description', ''),
             'summary': channel_data.get('summary', ''),
             'payload_name': request_payload_name,
-            'response_payload_name': response_payload_name
+            'response_payload_name': response_payload_name,
+            'is_existing': False,
+            'existing_match': None,
+            'is_conflict': False,
+            'conflict_match': None,
+            'conflict_reason': None
         }
+        
+        # Check for exact match or conflict in existing events
+        for existing_event in existing_data['events']:
+            if (existing_event['name'] == event_snake_name and
+                existing_event['domain_name'] == 'default' and
+                existing_event['type_name'] == 'event'):
+                
+                conflicts = []
+                if existing_event['is_sync'] != event_preview['is_sync']:
+                    conflicts.append(f"is_sync: existing={existing_event['is_sync']}, new={event_preview['is_sync']}")
+                if existing_event['is_post'] != event_preview['is_post']:
+                    conflicts.append(f"is_post: existing={existing_event['is_post']}, new={event_preview['is_post']}")
+                if existing_event['address'] != event_preview['address']:
+                    conflicts.append(f"address: existing='{existing_event['address']}', new='{event_preview['address']}'")
+                if existing_event['description'] != event_preview['description']:
+                    conflicts.append(f"description: existing='{existing_event['description']}', new='{event_preview['description']}'")
+                if existing_event['summary'] != event_preview['summary']:
+                    conflicts.append(f"summary: existing='{existing_event['summary']}', new='{event_preview['summary']}'")
+                if existing_event['payload_name'] != request_payload_name:
+                    conflicts.append(f"payload_name: existing='{existing_event['payload_name']}', new='{request_payload_name}'")
+                if existing_event['response_payload_name'] != response_payload_name:
+                    conflicts.append(f"response_payload_name: existing='{existing_event['response_payload_name']}', new='{response_payload_name}'")
+                
+                if not conflicts:
+                    event_preview['is_existing'] = True
+                    event_preview['existing_match'] = existing_event
+                else:
+                    event_preview['is_conflict'] = True
+                    event_preview['conflict_match'] = existing_event
+                    event_preview['conflict_reason'] = "; ".join(conflicts)
+                break
+        
         preview_data['events'].append(event_preview)
     
     # Process schemas to create payload and field type previews
@@ -664,12 +884,17 @@ def parse_yaml_for_preview(yaml_content):
             # This is a data schema, find corresponding payload
             payload_name = schema_name.replace('Data_', '').replace('Payload', '')
             
-            # Create payload preview
+            # Create payload preview - check for exact match
             payload_preview = {
                 'name': payload_name,
                 'project_name': project_name,
                 'description': schema_data.get('description', ''),
-                'fields': []
+                'fields': [],
+                'is_existing': False,
+                'existing_match': None,
+                'is_conflict': False,
+                'conflict_match': None,
+                'conflict_reason': None
             }
             
             # Process properties
@@ -677,17 +902,106 @@ def parse_yaml_for_preview(yaml_content):
             required_fields = schema_data.get('required', [])
             
             for field_name, field_data in properties.items():
-                # Create field preview
+                # Create field preview with proper field type name
+                field_type_name = field_data.get('type', 'string')
+                format_value = field_data.get('format')
+                if format_value:
+                    field_type_name_with_format = f"{field_type_name}_{format_value}"
+                else:
+                    field_type_name_with_format = field_type_name
+                
                 field_preview = {
                     'name': field_name,
-                    'type_name': field_data.get('type', 'string'),
+                    'type_name': field_type_name_with_format,
                     'required': field_name in required_fields,
                     'description': field_data.get('description', ''),
                     'minimum': field_data.get('minimum'),
-                    'maximum': field_data.get('maximum')
+                    'maximum': field_data.get('maximum'),
+                    'is_existing': False,
+                    'existing_match': None,
+                    'is_conflict': False,
+                    'conflict_match': None,
+                    'conflict_reason': None
                 }
+                
+                # Check for exact match or conflict in existing fields
+                for existing_field in existing_data['fields']:
+                    if (existing_field['name'] == field_name and
+                        existing_field.get('payload_name') == payload_name and
+                        existing_field.get('project_name') == project_name):
+                        conflicts = []
+                        if existing_field['type_name'] != field_preview['type_name']:
+                            conflicts.append(f"type: existing='{existing_field['type_name']}', new='{field_preview['type_name']}'")
+                        if existing_field['required'] != field_preview['required']:
+                            conflicts.append(f"required: existing={existing_field['required']}, new={field_preview['required']}")
+                        if existing_field['description'] != field_preview['description']:
+                            conflicts.append(f"description: existing='{existing_field['description']}', new='{field_preview['description']}'")
+                        if existing_field['minimum'] != field_preview['minimum']:
+                            conflicts.append(f"minimum: existing={existing_field['minimum']}, new={field_preview['minimum']}")
+                        if existing_field['maximum'] != field_preview['maximum']:
+                            conflicts.append(f"maximum: existing={existing_field['maximum']}, new={field_preview['maximum']}")
+                        
+                        if not conflicts:
+                            field_preview['is_existing'] = True
+                            field_preview['existing_match'] = existing_field
+                        else:
+                            field_preview['is_conflict'] = True
+                            field_preview['conflict_match'] = existing_field
+                            field_preview['conflict_reason'] = "; ".join(conflicts)
+                        break
+                
                 payload_preview['fields'].append(field_preview)
                 preview_data['fields'].append(field_preview)
+            
+            # Check for exact match or conflict in existing payloads
+            for existing_payload in existing_data['payloads']:
+                if (existing_payload['name'] == payload_name and
+                    existing_payload['project_name'] == project_name):
+                    
+                    conflicts = []
+                    if existing_payload['description'] != payload_preview['description']:
+                        conflicts.append(f"description: existing='{existing_payload['description']}', new='{payload_preview['description']}'")
+                    
+                    # Check field differences
+                    if len(existing_payload['fields']) != len(payload_preview['fields']):
+                        conflicts.append(f"field_count: existing={len(existing_payload['fields'])}, new={len(payload_preview['fields'])}")
+                    else:
+                        # Check individual field differences by name
+                        existing_fields_by_name = {field['name']: field for field in existing_payload['fields']}
+                        for field in payload_preview['fields']:
+                            if field['name'] in existing_fields_by_name:
+                                existing_field = existing_fields_by_name[field['name']]
+                                field_conflicts = []
+                                if existing_field['type_name'] != field['type_name']:
+                                    field_conflicts.append(f"type: existing='{existing_field['type_name']}', new='{field['type_name']}'")
+                                if existing_field['required'] != field['required']:
+                                    field_conflicts.append(f"required: existing={existing_field['required']}, new={field['required']}")
+                                if existing_field['description'] != field['description']:
+                                    field_conflicts.append(f"description: existing='{existing_field['description']}', new='{field['description']}'")
+                                if existing_field['minimum'] != field['minimum']:
+                                    field_conflicts.append(f"minimum: existing={existing_field['minimum']}, new={field['minimum']}")
+                                if existing_field['maximum'] != field['maximum']:
+                                    field_conflicts.append(f"maximum: existing={existing_field['maximum']}, new={field['maximum']}")
+                                
+                                if field_conflicts:
+                                    conflicts.append(f"field '{field['name']}': {'; '.join(field_conflicts)}")
+                            else:
+                                conflicts.append(f"field '{field['name']}': new field not in existing payload")
+                        
+                        # Check for fields that exist in database but not in YAML
+                        preview_field_names = {field['name'] for field in payload_preview['fields']}
+                        for existing_field in existing_payload['fields']:
+                            if existing_field['name'] not in preview_field_names:
+                                conflicts.append(f"field '{existing_field['name']}': exists in database but not in YAML")
+                    
+                    if not conflicts:
+                        payload_preview['is_existing'] = True
+                        payload_preview['existing_match'] = existing_payload
+                    else:
+                        payload_preview['is_conflict'] = True
+                        payload_preview['conflict_match'] = existing_payload
+                        payload_preview['conflict_reason'] = "; ".join(conflicts)
+                    break
             
             preview_data['payloads'].append(payload_preview)
             
@@ -743,8 +1057,38 @@ def parse_yaml_for_preview(yaml_content):
                     'custom_type': True,
                     'format': schema_data.get('format'),
                     'max_length': schema_data.get('maxLength'),
-                    'enum_choices': ','.join(schema_data.get('enum', []))
+                    'enum_choices': ','.join(schema_data.get('enum', [])),
+                    'is_existing': False,
+                    'existing_match': None,
+                    'is_conflict': False,
+                    'conflict_match': None,
+                    'conflict_reason': None
                 }
+                
+                # Check for exact match or conflict in existing field types
+                for existing_field_type in existing_data['field_types']:
+                    if existing_field_type['name'] == schema_name:
+                        conflicts = []
+                        if existing_field_type['type'] != field_type_preview['type']:
+                            conflicts.append(f"type: existing='{existing_field_type['type']}', new='{field_type_preview['type']}'")
+                        if existing_field_type['custom_type'] != field_type_preview['custom_type']:
+                            conflicts.append(f"custom_type: existing={existing_field_type['custom_type']}, new={field_type_preview['custom_type']}")
+                        if existing_field_type['format'] != field_type_preview['format']:
+                            conflicts.append(f"format: existing='{existing_field_type['format']}', new='{field_type_preview['format']}'")
+                        if existing_field_type['max_length'] != field_type_preview['max_length']:
+                            conflicts.append(f"max_length: existing={existing_field_type['max_length']}, new={field_type_preview['max_length']}")
+                        if existing_field_type['enum_choices'] != field_type_preview['enum_choices']:
+                            conflicts.append(f"enum_choices: existing='{existing_field_type['enum_choices']}', new='{field_type_preview['enum_choices']}'")
+                        
+                        if not conflicts:
+                            field_type_preview['is_existing'] = True
+                            field_type_preview['existing_match'] = existing_field_type
+                        else:
+                            field_type_preview['is_conflict'] = True
+                            field_type_preview['conflict_match'] = existing_field_type
+                            field_type_preview['conflict_reason'] = "; ".join(conflicts)
+                        break
+                
                 preview_data['field_types'].append(field_type_preview)
                 
             elif schema_data.get('type') in ['string', 'number', 'integer', 'boolean', 'array', 'object']:
@@ -755,11 +1099,41 @@ def parse_yaml_for_preview(yaml_content):
                     'custom_type': True,
                     'format': schema_data.get('format'),
                     'max_length': schema_data.get('maxLength'),
-                    'enum_choices': None
+                    'enum_choices': None,
+                    'is_existing': False,
+                    'existing_match': None,
+                    'is_conflict': False,
+                    'conflict_match': None,
+                    'conflict_reason': None
                 }
+                
+                # Check for exact match or conflict in existing field types
+                for existing_field_type in existing_data['field_types']:
+                    if existing_field_type['name'] == schema_name:
+                        conflicts = []
+                        if existing_field_type['type'] != field_type_preview['type']:
+                            conflicts.append(f"type: existing='{existing_field_type['type']}', new='{field_type_preview['type']}'")
+                        if existing_field_type['custom_type'] != field_type_preview['custom_type']:
+                            conflicts.append(f"custom_type: existing={existing_field_type['custom_type']}, new={field_type_preview['custom_type']}")
+                        if existing_field_type['format'] != field_type_preview['format']:
+                            conflicts.append(f"format: existing='{existing_field_type['format']}', new='{field_type_preview['format']}'")
+                        if existing_field_type['max_length'] != field_type_preview['max_length']:
+                            conflicts.append(f"max_length: existing={existing_field_type['max_length']}, new={field_type_preview['max_length']}")
+                        if existing_field_type['enum_choices'] != field_type_preview['enum_choices']:
+                            conflicts.append(f"enum_choices: existing='{existing_field_type['enum_choices']}', new='{field_type_preview['enum_choices']}'")
+                        
+                        if not conflicts:
+                            field_type_preview['is_existing'] = True
+                            field_type_preview['existing_match'] = existing_field_type
+                        else:
+                            field_type_preview['is_conflict'] = True
+                            field_type_preview['conflict_match'] = existing_field_type
+                            field_type_preview['conflict_reason'] = "; ".join(conflicts)
+                        break
+                
                 preview_data['field_types'].append(field_type_preview)
     
-    return preview_data
+    return preview_data, existing_data
 
 
 @csrf_exempt
@@ -778,23 +1152,50 @@ def import_yaml(request):
         # If not confirmed, show preview
         if not confirm:
             try:
-                preview_data = parse_yaml_for_preview(yaml_content)
+                preview_data, existing_data = parse_yaml_for_preview(yaml_content)
                 
-                # Calculate summary
+                # Calculate summary (only count NEW objects, not existing or conflicts)
                 summary = {
-                    'projects': len(preview_data['projects']),
-                    'services': len(preview_data['services']),
-                    'events': len(preview_data['events']),
-                    'payloads': len(preview_data['payloads']),
-                    'field_types': len(preview_data['field_types']),
-                    'fields': len(preview_data['fields']),
-                    'db_payloads': len(preview_data['db_payloads']),
-                    'db_fields': len(preview_data['db_fields'])
+                    'projects': len([p for p in preview_data['projects'] if not p.get('is_existing', False) and not p.get('is_conflict', False)]),
+                    'services': len([s for s in preview_data['services'] if not s.get('is_existing', False) and not s.get('is_conflict', False)]),
+                    'events': len([e for e in preview_data['events'] if not e.get('is_existing', False) and not e.get('is_conflict', False)]),
+                    'payloads': len([p for p in preview_data['payloads'] if not p.get('is_existing', False) and not p.get('is_conflict', False)]),
+                    'field_types': len([ft for ft in preview_data['field_types'] if not ft.get('is_existing', False) and not ft.get('is_conflict', False)]),
+                    'fields': len([f for f in preview_data['fields'] if not f.get('is_existing', False) and not f.get('is_conflict', False)]),
+                    'db_payloads': len([dp for dp in preview_data['db_payloads'] if not dp.get('is_existing', False) and not dp.get('is_conflict', False)]),
+                    'db_fields': len([df for df in preview_data['db_fields'] if not df.get('is_existing', False) and not df.get('is_conflict', False)])
+                }
+                
+                # Calculate conflict counts
+                conflict_summary = {
+                    'projects': len([p for p in preview_data['projects'] if p.get('is_conflict', False)]),
+                    'services': len([s for s in preview_data['services'] if s.get('is_conflict', False)]),
+                    'events': len([e for e in preview_data['events'] if e.get('is_conflict', False)]),
+                    'payloads': len([p for p in preview_data['payloads'] if p.get('is_conflict', False)]),
+                    'field_types': len([ft for ft in preview_data['field_types'] if ft.get('is_conflict', False)]),
+                    'fields': len([f for f in preview_data['fields'] if f.get('is_conflict', False)]),
+                    'db_payloads': len([dp for dp in preview_data['db_payloads'] if dp.get('is_conflict', False)]),
+                    'db_fields': len([df for df in preview_data['db_fields'] if df.get('is_conflict', False)])
+                }
+                
+                # Calculate existing counts
+                existing_summary = {
+                    'projects': len(existing_data['projects']),
+                    'services': len(existing_data['services']),
+                    'events': len(existing_data['events']),
+                    'payloads': len(existing_data['payloads']),
+                    'field_types': len(existing_data['field_types']),
+                    'fields': len(existing_data['fields']),
+                    'db_payloads': len(existing_data['db_payloads']),
+                    'db_fields': len(existing_data['db_fields'])
                 }
                 
                 return render(request, 'events/import_yaml_confirmation.html', {
                     'preview_data': preview_data,
+                    'existing_data': existing_data,
                     'summary': summary,
+                    'existing_summary': existing_summary,
+                    'conflict_summary': conflict_summary,
                     'yaml_content': yaml_content
                 })
                 
@@ -1138,15 +1539,27 @@ def import_yaml(request):
         
         # Add success message
         success_message = f'Successfully imported YAML! Created: {len(created_events)} events, {len(created_payloads)} payloads, {len(created_field_types)} field types, {len(created_fields)} fields, {len(created_db_payloads)} database payloads, {len(created_db_fields)} database fields.'
-        messages.success(request, success_message)
         
-        # Redirect to admin page
-        return redirect('admin:index')
+        # Return JSON response for AJAX requests
+        return JsonResponse({
+            'success': True,
+            'message': success_message,
+            'created_counts': {
+                'events': len(created_events),
+                'payloads': len(created_payloads),
+                'field_types': len(created_field_types),
+                'fields': len(created_fields),
+                'db_payloads': len(created_db_payloads),
+                'db_fields': len(created_db_fields)
+            }
+        })
         
     except Exception as e:
         # Add error message
         error_message = f'Import failed: {str(e)}'
-        messages.error(request, error_message)
         
-        # Redirect to admin page
-        return redirect('admin:index')
+        # Return JSON response for AJAX requests
+        return JsonResponse({
+            'success': False,
+            'error': error_message
+        })
