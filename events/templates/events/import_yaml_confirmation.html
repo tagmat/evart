@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Confirm YAML Import</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .summary {
+            background-color: #e7f3ff;
+            border: 1px solid #b3d9ff;
+            border-radius: 4px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+        .summary h2 {
+            margin-top: 0;
+            color: #0066cc;
+        }
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        .summary-item {
+            background: white;
+            padding: 15px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            text-align: center;
+        }
+        .summary-item .count {
+            font-size: 24px;
+            font-weight: bold;
+            color: #0066cc;
+        }
+        .summary-item .label {
+            color: #666;
+            margin-top: 5px;
+        }
+        .section {
+            margin-bottom: 30px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .section-header {
+            background-color: #f8f9fa;
+            padding: 15px 20px;
+            border-bottom: 1px solid #ddd;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .section-header:hover {
+            background-color: #e9ecef;
+        }
+        .section-header h3 {
+            margin: 0;
+            color: #495057;
+        }
+        .section-content {
+            padding: 20px;
+            display: none;
+        }
+        .section-content.expanded {
+            display: block;
+        }
+        .toggle-icon {
+            font-size: 18px;
+            color: #6c757d;
+            transition: transform 0.3s ease;
+        }
+        .toggle-icon.rotated {
+            transform: rotate(180deg);
+        }
+        .object-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .object-item {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 10px;
+        }
+        .object-item h4 {
+            margin: 0 0 10px 0;
+            color: #495057;
+        }
+        .object-details {
+            font-size: 14px;
+            color: #6c757d;
+        }
+        .object-details .detail-row {
+            margin-bottom: 5px;
+        }
+        .object-details .detail-label {
+            font-weight: bold;
+            display: inline-block;
+            width: 120px;
+        }
+        .field-list {
+            margin-top: 10px;
+        }
+        .field-item {
+            background: white;
+            border: 1px solid #e9ecef;
+            border-radius: 3px;
+            padding: 8px;
+            margin-bottom: 5px;
+            font-size: 13px;
+        }
+        .field-item .field-name {
+            font-weight: bold;
+            color: #495057;
+        }
+        .field-item .field-type {
+            color: #6c757d;
+            margin-left: 10px;
+        }
+        .field-item .field-required {
+            color: #dc3545;
+            margin-left: 10px;
+        }
+        .button-group {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+        }
+        button {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 0 10px;
+            min-width: 120px;
+        }
+        .confirm-btn {
+            background-color: #28a745;
+            color: white;
+        }
+        .confirm-btn:hover {
+            background-color: #218838;
+        }
+        .cancel-btn {
+            background-color: #6c757d;
+            color: white;
+        }
+        .cancel-btn:hover {
+            background-color: #545b62;
+        }
+        .back-btn {
+            background-color: #007bff;
+            color: white;
+        }
+        .back-btn:hover {
+            background-color: #0056b3;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            margin-top: 20px;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #007bff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 2s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .message {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            display: none;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .warning {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Confirm YAML Import</h1>
+        
+        <div class="summary">
+            <h2>Import Summary</h2>
+            <p>The following objects will be created from your YAML import:</p>
+            <div class="summary-grid">
+                <div class="summary-item">
+                    <div class="count">{{ summary.projects }}</div>
+                    <div class="label">Projects</div>
+                </div>
+                <div class="summary-item">
+                    <div class="count">{{ summary.services }}</div>
+                    <div class="label">Services</div>
+                </div>
+                <div class="summary-item">
+                    <div class="count">{{ summary.events }}</div>
+                    <div class="label">Events</div>
+                </div>
+                <div class="summary-item">
+                    <div class="count">{{ summary.payloads }}</div>
+                    <div class="label">Payloads</div>
+                </div>
+                <div class="summary-item">
+                    <div class="count">{{ summary.field_types }}</div>
+                    <div class="label">Field Types</div>
+                </div>
+                <div class="summary-item">
+                    <div class="count">{{ summary.fields }}</div>
+                    <div class="label">Fields</div>
+                </div>
+                <div class="summary-item">
+                    <div class="count">{{ summary.db_payloads }}</div>
+                    <div class="label">Database Payloads</div>
+                </div>
+                <div class="summary-item">
+                    <div class="count">{{ summary.db_fields }}</div>
+                    <div class="label">Database Fields</div>
+                </div>
+            </div>
+        </div>
+
+        {% if preview_data.projects %}
+        <div class="section">
+            <div class="section-header" onclick="toggleSection('projects')">
+                <h3>Projects ({{ preview_data.projects|length }})</h3>
+                <span class="toggle-icon" id="projects-icon">▼</span>
+            </div>
+            <div class="section-content" id="projects-content">
+                <div class="object-list">
+                    {% for project in preview_data.projects %}
+                    <div class="object-item">
+                        <h4>{{ project.name }}</h4>
+                        <div class="object-details">
+                            <div class="detail-row">
+                                <span class="detail-label">Slug:</span>
+                                {{ project.slug_name }}
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if preview_data.services %}
+        <div class="section">
+            <div class="section-header" onclick="toggleSection('services')">
+                <h3>Services ({{ preview_data.services|length }})</h3>
+                <span class="toggle-icon" id="services-icon">▼</span>
+            </div>
+            <div class="section-content" id="services-content">
+                <div class="object-list">
+                    {% for service in preview_data.services %}
+                    <div class="object-item">
+                        <h4>{{ service.name }}</h4>
+                        <div class="object-details">
+                            <div class="detail-row">
+                                <span class="detail-label">Project:</span>
+                                {{ service.project_name }}
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Version:</span>
+                                {{ service.version }}
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">AsyncAPI:</span>
+                                {{ service.asyncapi_version }}
+                            </div>
+                            {% if service.description %}
+                            <div class="detail-row">
+                                <span class="detail-label">Description:</span>
+                                {{ service.description }}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if preview_data.events %}
+        <div class="section">
+            <div class="section-header" onclick="toggleSection('events')">
+                <h3>Events ({{ preview_data.events|length }})</h3>
+                <span class="toggle-icon" id="events-icon">▼</span>
+            </div>
+            <div class="section-content" id="events-content">
+                <div class="object-list">
+                    {% for event in preview_data.events %}
+                    <div class="object-item">
+                        <h4>{{ event.name }}</h4>
+                        <div class="object-details">
+                            <div class="detail-row">
+                                <span class="detail-label">Domain:</span>
+                                {{ event.domain_name }}
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Type:</span>
+                                {{ event.type_name }}
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Sync:</span>
+                                {{ event.is_sync|yesno:"Yes,No" }}
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">POST:</span>
+                                {{ event.is_post|yesno:"Yes,No" }}
+                            </div>
+                            {% if event.address %}
+                            <div class="detail-row">
+                                <span class="detail-label">Address:</span>
+                                {{ event.address }}
+                            </div>
+                            {% endif %}
+                            {% if event.endpoint %}
+                            <div class="detail-row">
+                                <span class="detail-label">Endpoint:</span>
+                                {{ event.endpoint }}
+                            </div>
+                            {% endif %}
+                            {% if event.description %}
+                            <div class="detail-row">
+                                <span class="detail-label">Description:</span>
+                                {{ event.description }}
+                            </div>
+                            {% endif %}
+                            {% if event.summary %}
+                            <div class="detail-row">
+                                <span class="detail-label">Summary:</span>
+                                {{ event.summary }}
+                            </div>
+                            {% endif %}
+                            {% if event.payload_name %}
+                            <div class="detail-row">
+                                <span class="detail-label">Payload:</span>
+                                {{ event.payload_name }}
+                            </div>
+                            {% endif %}
+                            {% if event.response_payload_name %}
+                            <div class="detail-row">
+                                <span class="detail-label">Response Payload:</span>
+                                {{ event.response_payload_name }}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if preview_data.payloads %}
+        <div class="section">
+            <div class="section-header" onclick="toggleSection('payloads')">
+                <h3>Payloads ({{ preview_data.payloads|length }})</h3>
+                <span class="toggle-icon" id="payloads-icon">▼</span>
+            </div>
+            <div class="section-content" id="payloads-content">
+                <div class="object-list">
+                    {% for payload in preview_data.payloads %}
+                    <div class="object-item">
+                        <h4>{{ payload.name }}</h4>
+                        <div class="object-details">
+                            <div class="detail-row">
+                                <span class="detail-label">Project:</span>
+                                {{ payload.project_name }}
+                            </div>
+                            {% if payload.description %}
+                            <div class="detail-row">
+                                <span class="detail-label">Description:</span>
+                                {{ payload.description }}
+                            </div>
+                            {% endif %}
+                            {% if payload.fields %}
+                            <div class="field-list">
+                                <strong>Fields ({{ payload.fields|length }}):</strong>
+                                {% for field in payload.fields %}
+                                <div class="field-item">
+                                    <span class="field-name">{{ field.name }}</span>
+                                    <span class="field-type">{{ field.type_name }}</span>
+                                    {% if field.required %}<span class="field-required">*</span>{% endif %}
+                                    {% if field.description %} - {{ field.description }}{% endif %}
+                                </div>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if preview_data.field_types %}
+        <div class="section">
+            <div class="section-header" onclick="toggleSection('field_types')">
+                <h3>Field Types ({{ preview_data.field_types|length }})</h3>
+                <span class="toggle-icon" id="field_types-icon">▼</span>
+            </div>
+            <div class="section-content" id="field_types-content">
+                <div class="object-list">
+                    {% for field_type in preview_data.field_types %}
+                    <div class="object-item">
+                        <h4>{{ field_type.name }}</h4>
+                        <div class="object-details">
+                            <div class="detail-row">
+                                <span class="detail-label">Type:</span>
+                                {{ field_type.type }}
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Custom:</span>
+                                {{ field_type.custom_type|yesno:"Yes,No" }}
+                            </div>
+                            {% if field_type.format %}
+                            <div class="detail-row">
+                                <span class="detail-label">Format:</span>
+                                {{ field_type.format }}
+                            </div>
+                            {% endif %}
+                            {% if field_type.max_length %}
+                            <div class="detail-row">
+                                <span class="detail-label">Max Length:</span>
+                                {{ field_type.max_length }}
+                            </div>
+                            {% endif %}
+                            {% if field_type.enum_choices %}
+                            <div class="detail-row">
+                                <span class="detail-label">Enum Choices:</span>
+                                {{ field_type.enum_choices }}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if preview_data.db_payloads %}
+        <div class="section">
+            <div class="section-header" onclick="toggleSection('db_payloads')">
+                <h3>Database Payloads ({{ preview_data.db_payloads|length }})</h3>
+                <span class="toggle-icon" id="db_payloads-icon">▼</span>
+            </div>
+            <div class="section-content" id="db_payloads-content">
+                <div class="object-list">
+                    {% for db_payload in preview_data.db_payloads %}
+                    <div class="object-item">
+                        <h4>{{ db_payload.name }}</h4>
+                        <div class="object-details">
+                            <div class="detail-row">
+                                <span class="detail-label">Project:</span>
+                                {{ db_payload.project_name }}
+                            </div>
+                            {% if db_payload.create_rest %}
+                            <div class="detail-row">
+                                <span class="detail-label">Create REST:</span>
+                                {{ db_payload.create_rest|yesno:"Yes,No" }}
+                            </div>
+                            {% endif %}
+                            {% if db_payload.x_parser_schema_id %}
+                            <div class="detail-row">
+                                <span class="detail-label">Parser Schema ID:</span>
+                                {{ db_payload.x_parser_schema_id }}
+                            </div>
+                            {% endif %}
+                            {% if db_payload.x_derives_from %}
+                            <div class="detail-row">
+                                <span class="detail-label">Derives From:</span>
+                                {{ db_payload.x_derives_from }}
+                            </div>
+                            {% endif %}
+                            {% if db_payload.fields %}
+                            <div class="field-list">
+                                <strong>Fields ({{ db_payload.fields|length }}):</strong>
+                                {% for field in db_payload.fields %}
+                                <div class="field-item">
+                                    <span class="field-name">{{ field.name }}</span>
+                                    <span class="field-type">{{ field.type_name }}</span>
+                                    {% if field.required %}<span class="field-required">*</span>{% endif %}
+                                    {% if field.description %} - {{ field.description }}{% endif %}
+                                </div>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="button-group">
+            <button type="button" class="back-btn" onclick="goBack()">Back to Import</button>
+            <button type="button" class="cancel-btn" onclick="cancelImport()">Cancel</button>
+            <button type="button" class="confirm-btn" onclick="confirmImport()">Confirm Import</button>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Importing YAML...</p>
+        </div>
+
+        <div class="message" id="message"></div>
+    </div>
+
+    <script>
+        function toggleSection(sectionId) {
+            const content = document.getElementById(sectionId + '-content');
+            const icon = document.getElementById(sectionId + '-icon');
+            
+            if (content.classList.contains('expanded')) {
+                content.classList.remove('expanded');
+                icon.classList.remove('rotated');
+            } else {
+                content.classList.add('expanded');
+                icon.classList.add('rotated');
+            }
+        }
+
+        function goBack() {
+            window.history.back();
+        }
+
+        function cancelImport() {
+            if (confirm('Are you sure you want to cancel the import?')) {
+                window.location.href = '/events/import-yaml-page/';
+            }
+        }
+
+        function confirmImport() {
+            if (confirm('Are you sure you want to proceed with the import? This action cannot be undone.')) {
+                // Show loading
+                document.getElementById('loading').style.display = 'block';
+                document.querySelector('.confirm-btn').disabled = true;
+                document.querySelector('.cancel-btn').disabled = true;
+                document.querySelector('.back-btn').disabled = true;
+                
+                // Send confirmation request
+                const formData = new FormData();
+                formData.append('yaml_content', '{{ yaml_content|escapejs }}');
+                formData.append('confirm', 'true');
+                
+                fetch('/events/import-yaml/', {
+                    method: 'POST',
+                    body: formData,
+                    headers: {
+                        'X-CSRFToken': getCookie('csrftoken')
+                    }
+                })
+                .then(response => {
+                    if (response.ok) {
+                        return response.json();
+                    } else {
+                        throw new Error('Import failed');
+                    }
+                })
+                .then(data => {
+                    document.getElementById('loading').style.display = 'none';
+                    
+                    if (data.success) {
+                        showMessage('Import completed successfully!', 'success');
+                        setTimeout(() => {
+                            window.location.href = '/admin/';
+                        }, 2000);
+                    } else {
+                        showMessage(data.error || 'Import failed', 'error');
+                        document.querySelector('.confirm-btn').disabled = false;
+                        document.querySelector('.cancel-btn').disabled = false;
+                        document.querySelector('.back-btn').disabled = false;
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('loading').style.display = 'none';
+                    showMessage('Import failed: ' + error.message, 'error');
+                    document.querySelector('.confirm-btn').disabled = false;
+                    document.querySelector('.cancel-btn').disabled = false;
+                    document.querySelector('.back-btn').disabled = false;
+                });
+            }
+        }
+
+        function showMessage(text, type) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.textContent = text;
+            messageDiv.className = 'message ' + type;
+            messageDiv.style.display = 'block';
+        }
+
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let i = 0; i < cookies.length; i++) {
+                    const cookie = cookies[i].trim();
+                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+    </script>
+</body>
+</html>

@@ -533,17 +533,278 @@ def import_yaml_page(request):
     return render(request, 'events/import_yaml.html')
 
 
+def debug_import(request):
+    """Debug view to see what's happening"""
+    if request.method == 'POST':
+        print("=== DEBUG POST REQUEST ===")
+        print(f"POST data: {request.POST}")
+        print(f"yaml_content length: {len(request.POST.get('yaml_content', ''))}")
+        print(f"confirm parameter: {request.POST.get('confirm', 'NOT_FOUND')}")
+        print("=========================")
+        
+        return HttpResponse(f"""
+        <h1>Debug Info</h1>
+        <p>yaml_content length: {len(request.POST.get('yaml_content', ''))}</p>
+        <p>confirm parameter: {request.POST.get('confirm', 'NOT_FOUND')}</p>
+        <p>All POST data: {dict(request.POST)}</p>
+        <a href="/events/import-yaml-page/">Back to Import</a>
+        """)
+    
+    from django.template import Template, Context
+    template = Template("""
+    <h1>Debug Import</h1>
+    <form method="post">
+        {% csrf_token %}
+        <textarea name="yaml_content" rows="10" cols="50">asyncapi: 3.0.0
+info:
+  title: Test Project Test Service
+  version: 1.0.0</textarea><br><br>
+        <input type="hidden" name="confirm" value="false">
+        <button type="submit">Test Submit</button>
+    </form>
+    """)
+    return HttpResponse(template.render(Context({'request': request})))
+
+
+def parse_yaml_for_preview(yaml_content):
+    """Parse YAML and return preview data without creating objects"""
+    try:
+        yaml_data = yaml.safe_load(yaml_content)
+    except yaml.YAMLError as e:
+        raise Exception(f'Invalid YAML: {str(e)}')
+    
+    # Extract basic info
+    info = yaml_data.get('info', {})
+    project_name = info.get('title', 'Imported Project').split(' ')[0]  # Extract project name
+    service_name = info.get('title', 'Imported Service').split(' ')[-2] if len(info.get('title', '').split(' ')) > 1 else 'Imported Service'
+    
+    # Create preview data structures
+    preview_data = {
+        'projects': [],
+        'services': [],
+        'events': [],
+        'payloads': [],
+        'field_types': [],
+        'fields': [],
+        'db_payloads': [],
+        'db_fields': []
+    }
+    
+    # Project preview
+    project_slug = re.sub(r'[^a-zA-Z0-9]', '', project_name.lower())[:20]
+    preview_data['projects'].append({
+        'name': project_name,
+        'slug_name': project_slug
+    })
+    
+    # Service preview
+    service_slug = re.sub(r'[^a-zA-Z0-9]', '', service_name.lower())[:200]
+    preview_data['services'].append({
+        'name': service_name,
+        'project_name': project_name,
+        'slug_name': service_slug,
+        'asyncapi_version': yaml_data.get('asyncapi', '3.0.0'),
+        'version': info.get('version', '1.0.0'),
+        'description': info.get('description', 'Imported service')
+    })
+    
+    # Process channels and create event previews
+    channels = yaml_data.get('channels', {})
+    operations = yaml_data.get('operations', {})
+    yaml_messages = yaml_data.get('components', {}).get('messages', {})
+    schemas = yaml_data.get('components', {}).get('schemas', {})
+    
+    for channel_name, channel_data in channels.items():
+        # Convert PascalCase to snake_case for event name
+        event_snake_name = re.sub('([A-Z]+)', r'_\1', channel_name).lower().strip('_')
+        
+        # Parse messages from channel
+        channel_messages = channel_data.get('messages', {})
+        
+        # Extract payloads from messages
+        request_payload_name = None
+        response_payload_name = None
+        
+        # Handle both dictionary format (new) and array format (old)
+        if isinstance(channel_messages, dict):
+            # New dictionary format
+            for message_name, message_data in channel_messages.items():
+                if message_name in yaml_messages:
+                    message_ref = yaml_messages[message_name]
+                    payload_ref = message_ref.get('payload', {}).get('$ref', '')
+                    if payload_ref:
+                        # Extract payload name from reference
+                        payload_name = payload_ref.split('/')[-1].replace('Payload', '')
+                        
+                        # Assign to request or response based on message name
+                        if message_name.endswith('Response'):
+                            response_payload_name = payload_name
+                        else:
+                            request_payload_name = payload_name
+        
+        # Create event preview
+        event_preview = {
+            'name': event_snake_name,
+            'domain_name': 'default',
+            'type_name': 'event',
+            'is_sync': channel_data.get('x-is-sync', True),
+            'is_post': channel_data.get('x-is-post', False),
+            'address': channel_data.get('address'),
+            'endpoint': f"/{channel_name}",
+            'description': channel_data.get('description', ''),
+            'summary': channel_data.get('summary', ''),
+            'payload_name': request_payload_name,
+            'response_payload_name': response_payload_name
+        }
+        preview_data['events'].append(event_preview)
+    
+    # Process schemas to create payload and field type previews
+    for schema_name, schema_data in schemas.items():
+        if schema_name.startswith('Data_'):
+            # This is a data schema, find corresponding payload
+            payload_name = schema_name.replace('Data_', '').replace('Payload', '')
+            
+            # Create payload preview
+            payload_preview = {
+                'name': payload_name,
+                'project_name': project_name,
+                'description': schema_data.get('description', ''),
+                'fields': []
+            }
+            
+            # Process properties
+            properties = schema_data.get('properties', {})
+            required_fields = schema_data.get('required', [])
+            
+            for field_name, field_data in properties.items():
+                # Create field preview
+                field_preview = {
+                    'name': field_name,
+                    'type_name': field_data.get('type', 'string'),
+                    'required': field_name in required_fields,
+                    'description': field_data.get('description', ''),
+                    'minimum': field_data.get('minimum'),
+                    'maximum': field_data.get('maximum')
+                }
+                payload_preview['fields'].append(field_preview)
+                preview_data['fields'].append(field_preview)
+            
+            preview_data['payloads'].append(payload_preview)
+            
+        elif schema_name.startswith('DB_'):
+            # This is a database schema
+            db_payload_name = schema_name.replace('DB_', '')
+            
+            # Create database payload preview
+            db_payload_preview = {
+                'name': db_payload_name,
+                'project_name': project_name,
+                'create_rest': schema_data.get('x-create-rest', False),
+                'x_parser_schema_id': schema_data.get('x-parser-schema-id'),
+                'x_derives_from': schema_data.get('x-derives-from'),
+                'fields': []
+            }
+            
+            # Process properties
+            properties = schema_data.get('properties', {})
+            required_fields = schema_data.get('required', [])
+            
+            for field_name, field_data in properties.items():
+                # Create database field preview
+                db_field_preview = {
+                    'name': field_name,
+                    'type_name': field_data.get('type', 'string'),
+                    'required': field_name in required_fields,
+                    'description': field_data.get('description', ''),
+                    'minimum': field_data.get('minimum'),
+                    'maximum': field_data.get('maximum'),
+                    'x_type': field_data.get('x-type'),
+                    'x_unique': field_data.get('x-unique', False),
+                    'x_index': field_data.get('x-index', False),
+                    'default_value': field_data.get('default'),
+                    'x_relation_schema_id': field_data.get('x-relation-schema-id')
+                }
+                db_payload_preview['fields'].append(db_field_preview)
+                preview_data['db_fields'].append(db_field_preview)
+            
+            preview_data['db_payloads'].append(db_payload_preview)
+            
+        elif schema_name.endswith('Payload'):
+            # This is a main payload schema - we already handled these above
+            continue
+            
+        else:
+            # This might be a standalone field type (enum, custom type, etc.)
+            if 'enum' in schema_data:
+                # This is an enum type
+                field_type_preview = {
+                    'name': schema_name,
+                    'type': 'string',
+                    'custom_type': True,
+                    'format': schema_data.get('format'),
+                    'max_length': schema_data.get('maxLength'),
+                    'enum_choices': ','.join(schema_data.get('enum', []))
+                }
+                preview_data['field_types'].append(field_type_preview)
+                
+            elif schema_data.get('type') in ['string', 'number', 'integer', 'boolean', 'array', 'object']:
+                # This is a basic field type
+                field_type_preview = {
+                    'name': schema_name,
+                    'type': schema_data.get('type', 'string'),
+                    'custom_type': True,
+                    'format': schema_data.get('format'),
+                    'max_length': schema_data.get('maxLength'),
+                    'enum_choices': None
+                }
+                preview_data['field_types'].append(field_type_preview)
+    
+    return preview_data
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def import_yaml(request):
     """Import AsyncAPI YAML and create all corresponding objects"""
     try:
         yaml_content = request.POST.get('yaml_content', '')
+        confirm = request.POST.get('confirm', 'false').lower() == 'true'
+        
+        
         if not yaml_content:
             messages.error(request, 'No YAML content provided')
             return redirect('admin:index')
         
-        # Parse YAML
+        # If not confirmed, show preview
+        if not confirm:
+            try:
+                preview_data = parse_yaml_for_preview(yaml_content)
+                
+                # Calculate summary
+                summary = {
+                    'projects': len(preview_data['projects']),
+                    'services': len(preview_data['services']),
+                    'events': len(preview_data['events']),
+                    'payloads': len(preview_data['payloads']),
+                    'field_types': len(preview_data['field_types']),
+                    'fields': len(preview_data['fields']),
+                    'db_payloads': len(preview_data['db_payloads']),
+                    'db_fields': len(preview_data['db_fields'])
+                }
+                
+                return render(request, 'events/import_yaml_confirmation.html', {
+                    'preview_data': preview_data,
+                    'summary': summary,
+                    'yaml_content': yaml_content
+                })
+                
+            except Exception as e:
+                # Show the error message to the user instead of redirecting
+                return render(request, 'events/import_yaml.html', {
+                    'error_message': f'Preview failed: {str(e)}'
+                })
+        
+        # Parse YAML for actual import
         try:
             yaml_data = yaml.safe_load(yaml_content)
         except yaml.YAMLError as e:
