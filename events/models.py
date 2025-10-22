@@ -1,6 +1,7 @@
 import re
 
 from django.db import models
+from django.core.exceptions import ValidationError
 
 
 class EventType(models.Model):
@@ -18,7 +19,11 @@ class Event(models.Model):
                                          related_name="response_of_event")
     type = models.ForeignKey("EventType", default=1, on_delete=models.CASCADE)
     is_sync = models.BooleanField(default=True)
+    is_post = models.BooleanField(default=False, help_text="Whether this endpoint should use POST method")
+    address = models.CharField(max_length=200, blank=True, null=True, help_text="Resource address for grouping channels (e.g., 'invoices', 'user')")
     endpoint = models.CharField(max_length=200, blank=True, null=True)
+    description = models.TextField(max_length=500, blank=True, null=True)
+    summary = models.TextField(max_length=500, blank=True, null=True)
 
     def __str__(self):
         return "{0}/{1} [{2}]".format(self.domain.name, self.name, self.type.name)
@@ -40,6 +45,13 @@ class Event(models.Model):
                                                  re.sub(r"\.\[(.*?)\]", "", self.name)),
             self.type.name.lower() if not response else "response")
 
+    def clean(self):
+        """Validate that sync events must have a response_payload set"""
+        if self.is_sync and not self.response_payload:
+            raise ValidationError({
+                'response_payload': 'Sync events must have a response payload set.'
+            })
+
 
 class Domain(models.Model):
     project = models.ForeignKey("Project", on_delete=models.CASCADE)
@@ -52,6 +64,7 @@ class Domain(models.Model):
 class Payload(models.Model):
     project = models.ForeignKey("Project", on_delete=models.CASCADE)
     name = models.CharField(max_length=200)
+    description = models.TextField(max_length=500, blank=True, null=True)
 
     def __str__(self):
         return self.name
@@ -78,6 +91,10 @@ class Field(models.Model):
     minimum = models.IntegerField(blank=True, null=True)
     maximum = models.IntegerField(blank=True, null=True)
     description = models.CharField(max_length=200, blank=True, null=True)
+    # Additional fields for complex types
+    array_items_type = models.CharField(max_length=200, blank=True, null=True, help_text="Type of array items")
+    array_items_ref = models.CharField(max_length=200, blank=True, null=True, help_text="Schema reference for array items")
+    schema_ref = models.CharField(max_length=200, blank=True, null=True, help_text="Schema reference for complex types")
 
     def __str__(self):
         return self.name

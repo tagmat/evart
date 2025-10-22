@@ -7,12 +7,8 @@ from events.models import *
 
 
 class EventAdmin(admin.ModelAdmin):
-    list_display = ["name", "type", "domain", "payload",
-                    # "response_payload"
-                    ]
-    list_filter = ["domain", "type", "payload",
-                   # "response_payload"
-                   ]
+    list_display = ["name", "type", "domain", "payload", "response_payload", "is_sync", "is_post", "address"]
+    list_filter = ["domain", "type", "payload", "response_payload", "is_sync", "is_post", "address"]
 
 
 class EventInline(admin.TabularInline):

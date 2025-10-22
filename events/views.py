@@ -32,14 +32,21 @@ def create_or_get_field_type(project, field_data, created_field_types):
             }
         )
     else:
-        # Handle regular field types
+        # Handle regular field types - create unique types for different formats
+        format_value = field_data.get('format')
+        if format_value:
+            # Create a unique name for field types with formats
+            field_type_name_with_format = f"{field_type_name}_{format_value}"
+        else:
+            field_type_name_with_format = field_type_name
+            
         field_type, created = FieldType.objects.get_or_create(
             project=project,
-            name=field_type_name,
+            name=field_type_name_with_format,
             defaults={
                 'type': field_type_name,
                 'custom_type': False,
-                'format': field_data.get('format'),
+                'format': format_value,
                 'max_length': field_data.get('maxLength')
             }
         )
@@ -48,6 +55,71 @@ def create_or_get_field_type(project, field_data, created_field_types):
         created_field_types.append(field_type)
     
     return field_type
+
+
+def find_matching_payload(project, payload_name, schema_data, schemas):
+    """Find existing payload that matches the schema data exactly"""
+    # Get the data schema for this payload
+    data_schema_name = f"Data_{payload_name}"
+    if data_schema_name not in schema_data:
+        return None
+    
+    data_schema = schema_data[data_schema_name]
+    properties = data_schema.get('properties', {})
+    required_fields = data_schema.get('required', [])
+    
+    # Look for existing payloads with the same name
+    existing_payloads = Payload.objects.filter(project=project, name=payload_name)
+    
+    for payload in existing_payloads:
+        # Check if field count matches
+        payload_fields = payload.field_set.all()
+        if len(payload_fields) != len(properties):
+            continue
+        
+        # Check each field
+        field_matches = True
+        for field in payload_fields:
+            if field.name not in properties:
+                field_matches = False
+                break
+            
+            field_data = properties[field.name]
+            
+            # Check field properties
+            if field.required != (field.name in required_fields):
+                field_matches = False
+                break
+            
+            if field.description != field_data.get('description', ''):
+                field_matches = False
+                break
+            
+            if field.minimum != field_data.get('minimum'):
+                field_matches = False
+                break
+            
+            if field.maximum != field_data.get('maximum'):
+                field_matches = False
+                break
+            
+            # Check field type
+            if field.type.type != field_data.get('type', 'string'):
+                field_matches = False
+                break
+            
+            if field.type.format != field_data.get('format'):
+                field_matches = False
+                break
+            
+            if field.type.max_length != field_data.get('maxLength'):
+                field_matches = False
+                break
+        
+        if field_matches:
+            return payload
+    
+    return None
 
 
 @staff_member_required
@@ -82,53 +154,70 @@ def generate_full_yaml(request, service_id):
 
     for event in service.consumes.all().union(service.publishes.all()):
         # Convert snake_case to PascalCase for channel names
-        channel_name = ''.join(word.upper() if word.upper() in ['OTP', 'API', 'ID', 'URL'] else word.capitalize() for word in event.name.split('_'))
+        # Special handling for ID -> Id
+        channel_name = ''.join(word.upper() if word.upper() in ['OTP', 'API', 'URL'] else word.capitalize() for word in event.name.split('_'))
+        # Fix ID to Id
+        channel_name = channel_name.replace('ID', 'Id')
         # Convert snake_case to camelCase for address
         address_name = ''.join(word.upper() if word.upper() in ['OTP', 'API', 'ID', 'URL'] else word.capitalize() for word in event.name.split('_'))
         
-        # Create more descriptive channel descriptions
-        # Generate description and summary from event name
-        description = event.name.replace('_', ' ').title()
-        summary = f"{description} for web and mobile"
+        # Use stored description and summary, fallback to generated ones
+        description = event.description if event.description else event.name.replace('_', ' ').title()
+        summary = event.summary if event.summary else f"{description} for web and mobile"
         
-        configuration['channels'][channel_name] = {
-            'description': description,
-            'x-is-sync': True,
-            'address': address_name[0].lower() + address_name[1:],
-            'summary': summary,
-            'messages': {
-                channel_name: {
-                    '$ref': "#/components/messages/{0}".format(channel_name)
-                }
-            }
+        # Build messages dictionary
+        messages_dict = {
+            channel_name: {'$ref': "#/components/messages/{0}".format(channel_name)}
         }
-
-        # Create response channel for sync operations
-        if event.is_sync:
+        
+        # Add response message for sync events
+        if event.is_sync and event.response_payload:
             response_channel_name = channel_name + "Response"
-            # Create shorter response descriptions
-            # Generate response description and summary
-            response_description = f"{description} response"
-            response_summary = f"{description} response for web and mobile"
-            configuration['channels'][response_channel_name] = {
-                'description': response_description,
-                'x-is-sync': True,
-                'address': address_name[0].lower() + address_name[1:] + "Response",
-                'summary': response_summary,
-                'messages': {
-                    response_channel_name: {
-                        '$ref': "#/components/messages/{0}".format(response_channel_name)
-                    }
-                }
+            messages_dict[response_channel_name] = {
+                '$ref': "#/components/messages/{0}".format(response_channel_name)
             }
-        # Create operations
-        # Generate operations based on the expected pattern
-        # For main events: receive{EventName}
-        # For response events: send{EventName}Response
+
+        # Build channel configuration with proper property ordering
+        channel_config = {
+            'description': description,
+            'x-is-sync': event.is_sync
+        }
+        
+        # Add x-is-post before address for sync events
+        if event.is_sync:
+            channel_config['x-is-post'] = event.is_post
+            
+        channel_config['address'] = event.address if event.address else address_name[0].lower() + address_name[1:]
+        channel_config['summary'] = summary
+            
+        # Add messages last to match expected format
+        channel_config['messages'] = messages_dict
+            
+        configuration['channels'][channel_name] = channel_config
+
+        # Create operations with simple names and direct message references
         if not event.name.endswith('Response'):
-            # This is a main event - create receive operation
-            receive_op_name = "receive{0}".format(channel_name)
-            configuration['operations'][receive_op_name] = {
+            # Convert channel name to camelCase for operation name
+            base_operation_name = channel_name[0].lower() + channel_name[1:]
+            
+            # Add proper prefixes based on operation type
+            if channel_name.startswith('Create'):
+                operation_name = base_operation_name
+            elif channel_name.startswith('Get'):
+                operation_name = base_operation_name
+            elif channel_name.startswith('Update'):
+                operation_name = base_operation_name
+            elif channel_name.startswith('Delete'):
+                operation_name = base_operation_name
+            elif channel_name.startswith('User'):
+                operation_name = 'create' + channel_name
+            else:
+                operation_name = base_operation_name
+            
+            # Use stored endpoint or generate default
+            endpoint = event.endpoint if event.endpoint else "/{0}".format(channel_name)
+            
+            configuration['operations'][operation_name] = {
                 'action': 'receive',
                 'channel': {
                     '$ref': "#/channels/{0}".format(channel_name)
@@ -137,48 +226,17 @@ def generate_full_yaml(request, service_id):
                     {'$ref': "#/channels/{0}/messages/{0}".format(channel_name)}
                 ],
                 'x-operation-name': channel_name,
-                'x-endpoint': "/{0}".format(channel_name)
-            }
-            
-            # If this is a sync event, also create the response operation
-            if event.is_sync:
-                send_response_op_name = "send{0}Response".format(channel_name)
-                configuration['operations'][send_response_op_name] = {
-                    'action': 'send',
-                    'channel': {
-                        '$ref': '#/channels/{0}'.format(response_channel_name)
-                    },
-                    'messages': [
-                        {'$ref': '#/channels/{0}/messages/{0}'.format(response_channel_name)}
-                    ],
-                    'x-operation-name': response_channel_name,
-                    'x-endpoint': "/{0}".format(response_channel_name),
-                    'x-create-endpoint': True
-                }
-        else:
-            # This is a response event - create send operation
-            send_op_name = "send{0}".format(channel_name)
-            configuration['operations'][send_op_name] = {
-                'action': 'send',
-                'channel': {
-                    '$ref': "#/channels/{0}".format(channel_name)
-                },
-                'messages': [
-                    {'$ref': "#/channels/{0}/messages/{0}".format(channel_name)}
-                ],
-                'x-operation-name': channel_name,
-                'x-endpoint': "/{0}".format(channel_name),
-                'x-create-endpoint': True
+                'x-endpoint': endpoint
             }
 
         # Create message components
-        # Generate title from channel name
-        title = channel_name.replace('_', ' ').title()
+        # Generate proper title from channel name with spacing
+        title = ' '.join(word.capitalize() for word in re.findall(r'[A-Z][a-z]*', channel_name))
         
         configuration['components']['messages'][channel_name] = {
             'name': channel_name,
             'title': title,
-            'summary': "{0} for web and mobile".format(event.name.replace('_', ' ').title()),
+            'summary': event.summary if event.summary else event.name.replace('_', ' ').title(),
             'contentType': 'application/json',
             'payload': {
                 '$ref': "#/components/schemas/{0}Payload".format(channel_name)
@@ -186,18 +244,22 @@ def generate_full_yaml(request, service_id):
         }
 
         # Create response message for sync operations
-        if event.is_sync:
-            # Create proper response title formatting
-            # Generate response title from channel name
-            response_title = response_channel_name.replace('_', ' ').title()
+        if event.is_sync and event.response_payload:
+            response_channel_name = channel_name + "Response"
+            # Create proper response title formatting with spacing
+            # Generate response title from channel name with proper spacing
+            response_title = ' '.join(word.capitalize() for word in re.findall(r'[A-Z][a-z]*', response_channel_name))
+            
+            # Generate response summary based on the original event description
+            response_summary = f"Response with {event.description.lower()}" if event.description else f"{event.name.replace('_', ' ').title()} response"
             
             configuration['components']['messages'][response_channel_name] = {
                 'name': response_channel_name,
                 'title': response_title,
-                'summary': "{0} response for web and mobile".format(event.name.replace('_', ' ').title()),
+                'summary': response_summary,
                 'contentType': 'application/json',
                 'payload': {
-                    '$ref': '#/components/schemas/{0}Payload'.format(response_channel_name)
+                    '$ref': "#/components/schemas/{0}Payload".format(response_channel_name)
                 }
             }
 
@@ -229,13 +291,13 @@ def generate_full_yaml(request, service_id):
                     'x-parser-schema-id': 'timeToLive'
                 },
                 'data': {
-                    '$ref': "#/components/schemas/Data_{0}".format(payload.name)
+                    '$ref': "#/components/schemas/Data_{0}Payload".format(payload.name)
                 }
             }
         }
 
         # Create data schema
-        data_schema_name = "Data_{0}".format(payload.name)
+        data_schema_name = "Data_{0}Payload".format(payload.name)
         data_properties = {}
         required_fields = []
         
@@ -271,17 +333,75 @@ def generate_full_yaml(request, service_id):
                 }
                 if field.type.format:
                     field_property['format'] = field.type.format
+                if field.type.max_length and field.type.max_length > 0:
+                    field_property['maxLength'] = field.type.max_length
+                
+                # Handle array items
+                if field.type.type == 'array':
+                    if field.array_items_type:
+                        field_property['items'] = {'type': field.array_items_type}
+                    elif field.array_items_ref:
+                        field_property['items'] = {'$ref': field.array_items_ref}
+                
+                # Handle schema reference
+                if field.schema_ref:
+                    field_property = {'$ref': field.schema_ref}
 
             data_properties[field.name] = field_property
             
             if field.required:
                 required_fields.append(field.name)
 
-        configuration['components']['schemas'][data_schema_name] = {
+        schema_config = {
             'type': 'object',
-            'properties': data_properties,
-            'required': required_fields
+            'properties': data_properties
         }
+        
+        # Add description if payload has one
+        if payload.description:
+            schema_config['description'] = payload.description
+        
+        # Only add required if there are required fields
+        if required_fields:
+            schema_config['required'] = required_fields
+            
+        configuration['components']['schemas'][data_schema_name] = schema_config
+
+    # Create messages for payloads that aren't linked to events (orphaned payloads)
+    for payload in Payload.objects.all():
+        # Check if this payload is already linked to an event
+        is_linked = False
+        for event in service.consumes.all().union(service.publishes.all()):
+            if (event.payload and event.payload.id == payload.id) or \
+               (event.response_payload and event.response_payload.id == payload.id):
+                is_linked = True
+                break
+        
+        # If not linked, create a message for it
+        if not is_linked:
+            message_name = payload.name
+            title = ' '.join(word.capitalize() for word in re.findall(r'[A-Z][a-z]*', message_name))
+            
+            # Generate appropriate summary for orphaned messages
+            if message_name.endswith('Response'):
+                # For response messages, use a simple response format with proper capitalization
+                base_name = message_name.replace('Response', '')
+                # Convert PascalCase to proper case
+                base_name_proper = ' '.join(re.findall(r'[A-Z][a-z]*', base_name)).lower()
+                summary = f"{base_name_proper} response"
+            else:
+                # For regular messages, use the payload description if available
+                summary = payload.description if payload.description else title.lower()
+            
+            configuration['components']['messages'][message_name] = {
+                'name': message_name,
+                'title': title,
+                'summary': summary,
+                'contentType': 'application/json',
+                'payload': {
+                    '$ref': "#/components/schemas/{0}Payload".format(payload.name)
+                }
+            }
 
     for dbpayload in DatabasePayload.objects.all():
         properties = {}
@@ -291,7 +411,7 @@ def generate_full_yaml(request, service_id):
                 if field.type.enum_choices is not None:
                     enum_choices = field.type.enum_choices.replace(" ", "").split(",")
                     properties[field.name] = {
-                        '$ref': '#/components/schemas/{0}'.format(field.type.name)
+                        '$ref': "#/components/schemas/{0}".format(field.type.name)
                     }
                     configuration['components']['schemas'][field.type.name] = {
                         'type': field.type.type,
@@ -301,7 +421,7 @@ def generate_full_yaml(request, service_id):
                 else:
                     if field.type.type == "string":
                         properties[field.name] = {
-                            '$ref': '#/components/schemas/{0}'.format(field.type.name)
+                            '$ref': "#/components/schemas/{0}".format(field.type.name)
                         }
                         configuration['components']['schemas'][field.type.name] = {
                             'type': field.type.type,
@@ -340,8 +460,7 @@ def generate_full_yaml(request, service_id):
                     properties[field.name]['x-relation-schema-id'] = field.x_relation_schema_id
 
         schema_config = {
-            'type': 'object',
-            'properties': properties
+            'type': 'object'
         }
         
         # Add x-parser-schema-id if available
@@ -357,6 +476,9 @@ def generate_full_yaml(request, service_id):
         # Add x-derives-from if available
         if dbpayload.x_derives_from:
             schema_config['x-derives-from'] = dbpayload.x_derives_from
+            
+        # Add properties last
+        schema_config['properties'] = properties
             
         configuration['components']['schemas']["{1}{0}".format(dbpayload.name, "DB_")] = schema_config
 
@@ -472,27 +594,83 @@ def import_yaml(request):
         created_payloads = []
         
         for channel_name, channel_data in channels.items():
-            # Extract event name from channel (remove Response suffix if present)
-            is_response = channel_name.endswith('Response')
-            event_name = channel_name.replace('Response', '') if is_response else channel_name
-            
             # Convert PascalCase to snake_case for event name
-            event_snake_name = re.sub('([A-Z]+)', r'_\1', event_name).lower().strip('_')
+            event_snake_name = re.sub('([A-Z]+)', r'_\1', channel_name).lower().strip('_')
             
-            # Create payload if it exists in messages
-            payload = None
-            if channel_name in yaml_messages:
-                message_data = yaml_messages[channel_name]
-                payload_ref = message_data.get('payload', {}).get('$ref', '')
-                if payload_ref:
-                    # Extract payload name from reference
-                    payload_name = payload_ref.split('/')[-1].replace('Payload', '')
-                    payload, created = Payload.objects.get_or_create(
-                        project=project,
-                        name=payload_name,
-                        defaults={'name': payload_name}
-                    )
-                    created_payloads.append(payload)
+            # Parse messages from channel (support both dict and array formats for backward compatibility)
+            channel_messages = channel_data.get('messages', {})
+            
+            # Extract payloads from messages
+            request_payload = None
+            response_payload = None
+            
+            # Handle both dictionary format (new) and array format (old)
+            if isinstance(channel_messages, dict):
+                # New dictionary format
+                for message_name, message_data in channel_messages.items():
+                    if message_name in yaml_messages:
+                        message_ref = yaml_messages[message_name]
+                        payload_ref = message_ref.get('payload', {}).get('$ref', '')
+                        if payload_ref:
+                            # Extract payload name from reference
+                            payload_name = payload_ref.split('/')[-1].replace('Payload', '')
+                            
+                            # Try to find matching payload first
+                            matching_payload = find_matching_payload(project, payload_name, schemas, schemas)
+                            if matching_payload:
+                                payload = matching_payload
+                            else:
+                                # Create new payload
+                                payload, created = Payload.objects.get_or_create(
+                                    project=project,
+                                    name=payload_name,
+                                    defaults={
+                                        'name': payload_name,
+                                        'description': schemas.get(f'Data_{payload_name}Payload', {}).get('description', '')
+                                    }
+                                )
+                                if created:
+                                    created_payloads.append(payload)
+                            
+                            # Assign to request or response based on message name
+                            if message_name.endswith('Response'):
+                                response_payload = payload
+                            else:
+                                request_payload = payload
+            elif isinstance(channel_messages, list):
+                # Old array format (backward compatibility)
+                for message_item in channel_messages:
+                    if isinstance(message_item, dict):
+                        for message_name, message_data in message_item.items():
+                            if message_name in yaml_messages:
+                                message_ref = yaml_messages[message_name]
+                                payload_ref = message_ref.get('payload', {}).get('$ref', '')
+                                if payload_ref:
+                                    # Extract payload name from reference
+                                    payload_name = payload_ref.split('/')[-1].replace('Payload', '')
+                                    
+                                    # Try to find matching payload first
+                                    matching_payload = find_matching_payload(project, payload_name, schemas, schemas)
+                                    if matching_payload:
+                                        payload = matching_payload
+                                    else:
+                                        # Create new payload
+                                        payload, created = Payload.objects.get_or_create(
+                                            project=project,
+                                            name=payload_name,
+                                            defaults={
+                                                'name': payload_name,
+                                                'description': schemas.get(f'Data_{payload_name}Payload', {}).get('description', '')
+                                            }
+                                        )
+                                        if created:
+                                            created_payloads.append(payload)
+                                    
+                                    # Assign to request or response based on message name
+                                    if message_name.endswith('Response'):
+                                        response_payload = payload
+                                    else:
+                                        request_payload = payload
             
             # Create event
             event, created = Event.objects.get_or_create(
@@ -500,18 +678,37 @@ def import_yaml(request):
                 name=event_snake_name,
                 defaults={
                     'type': event_type,
-                    'payload': payload if not is_response else None,
-                    'response_payload': payload if is_response else None,
+                    'payload': request_payload,
+                    'response_payload': response_payload,
                     'is_sync': channel_data.get('x-is-sync', True),
-                    'endpoint': f"/{event_name}"
+                    'is_post': channel_data.get('x-is-post', False),
+                    'address': channel_data.get('address'),
+                    'endpoint': f"/{channel_name}",
+                    'description': channel_data.get('description', ''),
+                    'summary': channel_data.get('summary', '')
                 }
             )
+            
+            # Update existing event with new data if not created
+            if not created:
+                event.payload = request_payload
+                event.response_payload = response_payload
+                event.is_sync = channel_data.get('x-is-sync', True)
+                event.is_post = channel_data.get('x-is-post', False)
+                event.address = channel_data.get('address')
+                event.endpoint = f"/{channel_name}"
+                event.description = channel_data.get('description', '')
+                event.summary = channel_data.get('summary', '')
+                event.save()
+            
             created_events.append(event)
         
-        # Process operations to set consumes/publishes relationships
+        # Process operations to set consumes/publishes relationships and store endpoints
         for op_name, op_data in operations.items():
             action = op_data.get('action')
             channel_ref = op_data.get('channel', {}).get('$ref', '')
+            endpoint = op_data.get('x-endpoint', '')
+            
             if channel_ref:
                 channel_name = channel_ref.split('/')[-1]
                 
@@ -521,6 +718,11 @@ def import_yaml(request):
                 
                 try:
                     event = Event.objects.get(domain=domain, name=event_snake_name)
+                    
+                    # Store endpoint if provided
+                    if endpoint and action == 'receive':
+                        event.endpoint = endpoint
+                        event.save()
                     
                     if action == 'receive':
                         service.consumes.add(event)
@@ -550,6 +752,24 @@ def import_yaml(request):
                         # Create or get field type with comprehensive handling
                         field_type = create_or_get_field_type(project, field_data, created_field_types)
                         
+                        # Handle array items and schema references
+                        array_items_type = None
+                        array_items_ref = None
+                        schema_ref = None
+                        
+                        # Check for array items
+                        if field_data.get('type') == 'array' and 'items' in field_data:
+                            items = field_data['items']
+                            if isinstance(items, dict):
+                                if 'type' in items:
+                                    array_items_type = items['type']
+                                if '$ref' in items:
+                                    array_items_ref = items['$ref']
+                        
+                        # Check for schema reference
+                        if '$ref' in field_data:
+                            schema_ref = field_data['$ref']
+                        
                         # Create field with all attributes
                         field, created = Field.objects.get_or_create(
                             payload=payload,
@@ -559,7 +779,10 @@ def import_yaml(request):
                                 'required': field_name in required_fields,
                                 'description': field_data.get('description', ''),
                                 'minimum': field_data.get('minimum'),
-                                'maximum': field_data.get('maximum')
+                                'maximum': field_data.get('maximum'),
+                                'array_items_type': array_items_type,
+                                'array_items_ref': array_items_ref,
+                                'schema_ref': schema_ref
                             }
                         )
                         if created:
@@ -633,7 +856,7 @@ def import_yaml(request):
                             'format': schema_data.get('format'),
                             'max_length': schema_data.get('maxLength')
                         }
-                    )
+                    ) 
                     if created:
                         created_field_types.append(field_type)
                 
@@ -641,7 +864,7 @@ def import_yaml(request):
                     # This is a basic field type
                     field_type, created = FieldType.objects.get_or_create(
                         project=project,
-                        name=schema_name,
+                        name=schema_name,   
                         defaults={
                             'type': schema_data.get('type', 'string'),
                             'custom_type': True,
