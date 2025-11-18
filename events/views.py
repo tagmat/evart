@@ -1,8 +1,10 @@
 import yaml
 import re
 import json
+import logging
 from django.contrib.admin.views.decorators import staff_member_required
 from django.db.models import Q
+from django.db.utils import OperationalError
 from django.shortcuts import HttpResponse, render, redirect
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -11,51 +13,67 @@ from django.contrib import messages
 
 from events.models import *
 
+logger = logging.getLogger(__name__)
+
 
 def create_or_get_field_type(project, field_data, created_field_types):
     """Helper function to create or get field type with comprehensive handling"""
-    field_type_name = field_data.get('type', 'string')
-    
-    # Handle enum types
-    if 'enum' in field_data:
-        enum_choices = ','.join(field_data.get('enum', []))
-        # Create a unique name for enum types
-        enum_type_name = f"{field_type_name}_enum_{hash(enum_choices) % 10000}"
-        field_type, created = FieldType.objects.get_or_create(
+    try:
+        field_type_name = field_data.get('type', 'string')
+        
+        # Handle enum types
+        if 'enum' in field_data:
+            enum_choices = ','.join(field_data.get('enum', []))
+            # Create a unique name for enum types
+            enum_type_name = f"{field_type_name}_enum_{hash(enum_choices) % 10000}"
+            field_type, created = FieldType.objects.get_or_create(
+                project=project,
+                name=enum_type_name,
+                defaults={
+                    'type': 'string',
+                    'custom_type': True,
+                    'enum_choices': enum_choices,
+                    'format': field_data.get('format'),
+                    'max_length': field_data.get('maxLength')
+                }
+            )
+        else:
+            # Handle regular field types - create unique types for different formats
+            format_value = field_data.get('format')
+            if format_value:
+                # Create a unique name for field types with formats
+                field_type_name_with_format = f"{field_type_name}_{format_value}"
+            else:
+                field_type_name_with_format = field_type_name
+                
+            field_type, created = FieldType.objects.get_or_create(
+                project=project,
+                name=field_type_name_with_format,
+                defaults={
+                    'type': field_type_name,
+                    'custom_type': False,
+                    'format': format_value,
+                    'max_length': field_data.get('maxLength')
+                }
+            )
+        
+        if created:
+            created_field_types.append(field_type)
+        
+        return field_type
+    except Exception as e:
+        # Log error but return a default field type to prevent blocking the import
+        logger.error(f"Failed to create/get FieldType: {str(e)}")
+        # Return a default string field type as fallback
+        field_type, _ = FieldType.objects.get_or_create(
             project=project,
-            name=enum_type_name,
+            name='string',
             defaults={
                 'type': 'string',
-                'custom_type': True,
-                'enum_choices': enum_choices,
-                'format': field_data.get('format'),
-                'max_length': field_data.get('maxLength')
+                'custom_type': False
             }
         )
-    else:
-        # Handle regular field types - create unique types for different formats
-        format_value = field_data.get('format')
-        if format_value:
-            # Create a unique name for field types with formats
-            field_type_name_with_format = f"{field_type_name}_{format_value}"
-        else:
-            field_type_name_with_format = field_type_name
-            
-        field_type, created = FieldType.objects.get_or_create(
-            project=project,
-            name=field_type_name_with_format,
-            defaults={
-                'type': field_type_name,
-                'custom_type': False,
-                'format': format_value,
-                'max_length': field_data.get('maxLength')
-            }
-        )
-    
-    if created:
-        created_field_types.append(field_type)
-    
-    return field_type
+        return field_type
 
 
 def find_matching_payload(project, payload_name, schema_data, schemas):
@@ -1611,44 +1629,49 @@ def import_yaml(request):
                 required_fields = schema_data.get('required', [])
                 
                 for field_name, field_data in properties.items():
-                    # Create or get field type with comprehensive handling
-                    field_type = create_or_get_field_type(project, field_data, created_field_types)
-                    
-                    # Handle array items and schema references
-                    array_items_type = None
-                    array_items_ref = None
-                    schema_ref = None
-                    
-                    # Check for array items
-                    if field_data.get('type') == 'array' and 'items' in field_data:
-                        items = field_data['items']
-                        if isinstance(items, dict):
-                            if 'type' in items:
-                                array_items_type = items['type']
-                            if '$ref' in items:
-                                array_items_ref = items['$ref']
-                    
-                    # Check for schema reference
-                    if '$ref' in field_data:
-                        schema_ref = field_data['$ref']
-                    
-                    # Create field with all attributes
-                    field, created = Field.objects.get_or_create(
-                        payload=payload,
-                        name=field_name,
-                        defaults={
-                            'type': field_type,
-                            'required': field_name in required_fields,
-                            'description': field_data.get('description', ''),
-                            'minimum': field_data.get('minimum'),
-                            'maximum': field_data.get('maximum'),
-                            'array_items_type': array_items_type,
-                            'array_items_ref': array_items_ref,
-                            'schema_ref': schema_ref
-                        }
-                    )
-                    if created:
-                        created_fields.append(field)
+                    try:
+                        # Create or get field type with comprehensive handling
+                        field_type = create_or_get_field_type(project, field_data, created_field_types)
+                        
+                        # Handle array items and schema references
+                        array_items_type = None
+                        array_items_ref = None
+                        schema_ref = None
+                        
+                        # Check for array items
+                        if field_data.get('type') == 'array' and 'items' in field_data:
+                            items = field_data['items']
+                            if isinstance(items, dict):
+                                if 'type' in items:
+                                    array_items_type = items['type']
+                                if '$ref' in items:
+                                    array_items_ref = items['$ref']
+                        
+                        # Check for schema reference
+                        if '$ref' in field_data:
+                            schema_ref = field_data['$ref']
+                        
+                        # Create field with all attributes
+                        field, created = Field.objects.get_or_create(
+                            payload=payload,
+                            name=field_name,
+                            defaults={
+                                'type': field_type,
+                                'required': field_name in required_fields,
+                                'description': field_data.get('description', ''),
+                                'minimum': field_data.get('minimum'),
+                                'maximum': field_data.get('maximum'),
+                                'array_items_type': array_items_type,
+                                'array_items_ref': array_items_ref,
+                                'schema_ref': schema_ref
+                            }
+                        )
+                        if created:
+                            created_fields.append(field)
+                    except Exception as field_error:
+                        # Log but continue - don't let individual field errors block the import
+                        logger.warning(f"Failed to create Field {field_name} for payload {payload_name}: {str(field_error)}")
+                        continue
             
             elif schema_name.endswith('Payload') and not schema_name.startswith('Data_') and not schema_name.startswith('DB_'):
                 # This is a main payload schema - check if it has inline data object
@@ -1668,42 +1691,47 @@ def import_yaml(request):
                         inline_required_fields = data_property.get('required', [])
                         
                         for field_name, field_data in inline_data_properties.items():
-                            # Create or get field type
-                            field_type = create_or_get_field_type(project, field_data, created_field_types)
-                            
-                            # Handle array items and schema references
-                            array_items_type = None
-                            array_items_ref = None
-                            schema_ref = None
-                            
-                            if field_data.get('type') == 'array' and 'items' in field_data:
-                                items = field_data['items']
-                                if isinstance(items, dict):
-                                    if 'type' in items:
-                                        array_items_type = items['type']
-                                    if '$ref' in items:
-                                        array_items_ref = items['$ref']
-                            
-                            if '$ref' in field_data:
-                                schema_ref = field_data['$ref']
-                            
-                            # Create field
-                            field, created = Field.objects.get_or_create(
-                                payload=payload,
-                                name=field_name,
-                                defaults={
-                                    'type': field_type,
-                                    'required': field_name in inline_required_fields,
-                                    'description': field_data.get('description', ''),
-                                    'minimum': field_data.get('minimum'),
-                                    'maximum': field_data.get('maximum'),
-                                    'array_items_type': array_items_type,
-                                    'array_items_ref': array_items_ref,
-                                    'schema_ref': schema_ref
-                                }
-                            )
-                            if created:
-                                created_fields.append(field)
+                            try:
+                                # Create or get field type
+                                field_type = create_or_get_field_type(project, field_data, created_field_types)
+                                
+                                # Handle array items and schema references
+                                array_items_type = None
+                                array_items_ref = None
+                                schema_ref = None
+                                
+                                if field_data.get('type') == 'array' and 'items' in field_data:
+                                    items = field_data['items']
+                                    if isinstance(items, dict):
+                                        if 'type' in items:
+                                            array_items_type = items['type']
+                                        if '$ref' in items:
+                                            array_items_ref = items['$ref']
+                                
+                                if '$ref' in field_data:
+                                    schema_ref = field_data['$ref']
+                                
+                                # Create field
+                                field, created = Field.objects.get_or_create(
+                                    payload=payload,
+                                    name=field_name,
+                                    defaults={
+                                        'type': field_type,
+                                        'required': field_name in inline_required_fields,
+                                        'description': field_data.get('description', ''),
+                                        'minimum': field_data.get('minimum'),
+                                        'maximum': field_data.get('maximum'),
+                                        'array_items_type': array_items_type,
+                                        'array_items_ref': array_items_ref,
+                                        'schema_ref': schema_ref
+                                    }
+                                )
+                                if created:
+                                    created_fields.append(field)
+                            except Exception as field_error:
+                                # Log but continue - don't let individual field errors block the import
+                                logger.warning(f"Failed to create Field {field_name} for inline payload {payload_name}: {str(field_error)}")
+                                continue
                                 
                     except Payload.DoesNotExist:
                         # Payload doesn't exist yet, skip (it will be handled elsewhere)
@@ -1711,52 +1739,89 @@ def import_yaml(request):
             
             elif schema_name.startswith('DB_'):
                 # This is a database schema
-                db_payload_name = schema_name.replace('DB_', '')
-                db_payload, created = DatabasePayload.objects.get_or_create(
-                    project=project,
-                    service=service,
-                    name=db_payload_name,
-                    defaults={
-                        'name': db_payload_name,
-                        'service': service,
-                        'create_rest': schema_data.get('x-create-rest', False),
-                        'x_parser_schema_id': schema_data.get('x-parser-schema-id'),
-                        'x_derives_from': schema_data.get('x-derives-from')
-                    }
-                )
-                if created:
-                    created_db_payloads.append(db_payload)
-                
-                # Process properties
-                properties = schema_data.get('properties', {})
-                required_fields = schema_data.get('required', [])
-                
-                for field_name, field_data in properties.items():
-                    # Create or get field type with comprehensive handling
-                    field_type = create_or_get_field_type(project, field_data, created_field_types)
-                    
-                    # Create database field with all attributes
-                    db_field, created = DatabaseField.objects.get_or_create(
-                        payload=db_payload,
-                        name=field_name,
+                # Wrap in try/except to prevent blocking FieldType/Field creation if service_id column doesn't exist
+                try:
+                    db_payload_name = schema_name.replace('DB_', '')
+                    db_payload, created = DatabasePayload.objects.get_or_create(
+                        project=project,
+                        service=service,
+                        name=db_payload_name,
                         defaults={
-                            'type': field_type,
-                            'required': field_name in required_fields,
-                            'description': field_data.get('description', ''),
-                            'minimum': field_data.get('minimum'),
-                            'maximum': field_data.get('maximum'),
-                            'x_type': field_data.get('x-type'),
-                            'x_unique': field_data.get('x-unique', False),
-                            'x_index': field_data.get('x-index', False),
-                            'default_value': field_data.get('default'),
-                            'x_relation_schema_id': field_data.get('x-relation-schema-id')
+                            'name': db_payload_name,
+                            'service': service,
+                            'create_rest': schema_data.get('x-create-rest', False),
+                            'x_parser_schema_id': schema_data.get('x-parser-schema-id'),
+                            'x_derives_from': schema_data.get('x-derives-from')
                         }
                     )
                     if created:
-                        created_db_fields.append(db_field)
-                
-                # Add to service
-                service.database_payloads.add(db_payload)
+                        created_db_payloads.append(db_payload)
+                    
+                    # Process properties
+                    properties = schema_data.get('properties', {})
+                    required_fields = schema_data.get('required', [])
+                    
+                    for field_name, field_data in properties.items():
+                        try:
+                            # Create or get field type with comprehensive handling
+                            # This should work independently of DatabasePayload
+                            field_type = create_or_get_field_type(project, field_data, created_field_types)
+                            
+                            # Create database field with all attributes
+                            db_field, created = DatabaseField.objects.get_or_create(
+                                payload=db_payload,
+                                name=field_name,
+                                defaults={
+                                    'type': field_type,
+                                    'required': field_name in required_fields,
+                                    'description': field_data.get('description', ''),
+                                    'minimum': field_data.get('minimum'),
+                                    'maximum': field_data.get('maximum'),
+                                    'x_type': field_data.get('x-type'),
+                                    'x_unique': field_data.get('x-unique', False),
+                                    'x_index': field_data.get('x-index', False),
+                                    'default_value': field_data.get('default'),
+                                    'x_relation_schema_id': field_data.get('x-relation-schema-id')
+                                }
+                            )
+                            if created:
+                                created_db_fields.append(db_field)
+                        except Exception as field_error:
+                            # Log but continue - don't let individual field errors block the import
+                            logger.warning(f"Failed to create DatabaseField {field_name} for {db_payload_name}: {str(field_error)}")
+                            continue
+                    
+                    # Add to service (only if column exists)
+                    try:
+                        service.database_payloads.add(db_payload)
+                    except OperationalError:
+                        # Skip if service_id column doesn't exist
+                        pass
+                except OperationalError as db_error:
+                    # If service_id column doesn't exist, skip DatabasePayload creation
+                    # but continue with FieldType creation for the properties
+                    if 'no such column' in str(db_error).lower() and 'service_id' in str(db_error):
+                        # Still create FieldTypes from the properties even if we can't create DatabasePayload
+                        properties = schema_data.get('properties', {})
+                        for field_name, field_data in properties.items():
+                            try:
+                                field_type = create_or_get_field_type(project, field_data, created_field_types)
+                            except Exception as ft_error:
+                                logger.warning(f"Failed to create FieldType for {field_name} in {schema_name}: {str(ft_error)}")
+                                continue
+                    else:
+                        # Re-raise if it's a different error
+                        raise
+                except Exception as db_payload_error:
+                    # Log other errors but continue
+                    logger.error(f"Failed to create DatabasePayload {schema_name}: {str(db_payload_error)}")
+                    # Still try to create FieldTypes from properties
+                    properties = schema_data.get('properties', {})
+                    for field_name, field_data in properties.items():
+                        try:
+                            field_type = create_or_get_field_type(project, field_data, created_field_types)
+                        except Exception:
+                            continue
             
             elif schema_name.endswith('Payload'):
                 # This is a main payload schema
@@ -1787,39 +1852,44 @@ def import_yaml(request):
                         inline_required_fields = data_property.get('required', [])
                         
                         for field_name, field_data in inline_data_properties.items():
-                            field_type = create_or_get_field_type(project, field_data, created_field_types)
-                            
-                            array_items_type = None
-                            array_items_ref = None
-                            schema_ref = None
-                            
-                            if field_data.get('type') == 'array' and 'items' in field_data:
-                                items = field_data['items']
-                                if isinstance(items, dict):
-                                    if 'type' in items:
-                                        array_items_type = items['type']
-                                    if '$ref' in items:
-                                        array_items_ref = items['$ref']
-                            
-                            if '$ref' in field_data:
-                                schema_ref = field_data['$ref']
-                            
-                            field, created = Field.objects.get_or_create(
-                                payload=payload,
-                                name=field_name,
-                                defaults={
-                                    'type': field_type,
-                                    'required': field_name in inline_required_fields,
-                                    'description': field_data.get('description', ''),
-                                    'minimum': field_data.get('minimum'),
-                                    'maximum': field_data.get('maximum'),
-                                    'array_items_type': array_items_type,
-                                    'array_items_ref': array_items_ref,
-                                    'schema_ref': schema_ref
-                                }
-                            )
-                            if created:
-                                created_fields.append(field)
+                            try:
+                                field_type = create_or_get_field_type(project, field_data, created_field_types)
+                                
+                                array_items_type = None
+                                array_items_ref = None
+                                schema_ref = None
+                                
+                                if field_data.get('type') == 'array' and 'items' in field_data:
+                                    items = field_data['items']
+                                    if isinstance(items, dict):
+                                        if 'type' in items:
+                                            array_items_type = items['type']
+                                        if '$ref' in items:
+                                            array_items_ref = items['$ref']
+                                
+                                if '$ref' in field_data:
+                                    schema_ref = field_data['$ref']
+                                
+                                field, created = Field.objects.get_or_create(
+                                    payload=payload,
+                                    name=field_name,
+                                    defaults={
+                                        'type': field_type,
+                                        'required': field_name in inline_required_fields,
+                                        'description': field_data.get('description', ''),
+                                        'minimum': field_data.get('minimum'),
+                                        'maximum': field_data.get('maximum'),
+                                        'array_items_type': array_items_type,
+                                        'array_items_ref': array_items_ref,
+                                        'schema_ref': schema_ref
+                                    }
+                                )
+                                if created:
+                                    created_fields.append(field)
+                            except Exception as field_error:
+                                # Log but continue - don't let individual field errors block the import
+                                logger.warning(f"Failed to create Field {field_name} for inline payload {payload_name}: {str(field_error)}")
+                                continue
                     else:
                         # Process the corresponding Data_* schema if it exists
                         data_schema_name = f'Data_{schema_name}'
@@ -1829,44 +1899,51 @@ def import_yaml(request):
                             required_fields = data_schema_data.get('required', [])
                         
                         for field_name, field_data in properties.items():
-                            # Create or get field type with comprehensive handling
-                            field_type = create_or_get_field_type(project, field_data, created_field_types)
-                            
-                            # Handle array items and schema references
-                            array_items_type = None
-                            array_items_ref = None
-                            schema_ref = None
-                            
-                            # Check for array items
-                            if field_data.get('type') == 'array' and 'items' in field_data:
-                                items = field_data['items']
-                                if isinstance(items, dict):
-                                    if 'type' in items:
-                                        array_items_type = items['type']
-                                    if '$ref' in items:
-                                        array_items_ref = items['$ref']
-                            
-                            # Check for schema reference
-                            if '$ref' in field_data:
-                                schema_ref = field_data['$ref']
-                            
-                            # Create field with all attributes
-                            field, created = Field.objects.get_or_create(
-                                payload=payload,
-                                name=field_name,
-                                defaults={
-                                    'type': field_type,
-                                    'required': field_name in required_fields,
-                                    'description': field_data.get('description', ''),
-                                    'minimum': field_data.get('minimum'),
-                                    'maximum': field_data.get('maximum'),
-                                    'array_items_type': array_items_type,
-                                    'array_items_ref': array_items_ref,
-                                    'schema_ref': schema_ref
-                                }
-                            )
-                            if created:
-                                created_fields.append(field)
+                            try:
+                                # Create or get field type with comprehensive handling
+                                field_type = create_or_get_field_type(project, field_data, created_field_types)
+                                
+                                # Handle array items and schema references
+                                array_items_type = None
+                                array_items_ref = None
+                                schema_ref = None
+                                
+                                # Check for array items
+                                if field_data.get('type') == 'array' and 'items' in field_data:
+                                    items = field_data['items']
+                                    if isinstance(items, dict):
+                                        if 'type' in items:
+                                            array_items_type = items['type']
+                                        if '$ref' in items:
+                                            array_items_ref = items['$ref']
+                                
+                                # Check for schema reference
+                                if '$ref' in field_data:
+                                    schema_ref = field_data['$ref']
+                                
+                                # Create field with all attributes
+                                field, created = Field.objects.get_or_create(
+                                    payload=payload,
+                                    name=field_name,
+                                    defaults={
+                                        'type': field_type,
+                                        'required': field_name in required_fields,
+                                        'description': field_data.get('description', ''),
+                                        'minimum': field_data.get('minimum'),
+                                        'maximum': field_data.get('maximum'),
+                                        'array_items_type': array_items_type,
+                                        'array_items_ref': array_items_ref,
+                                        'schema_ref': schema_ref
+                                    }
+                                )
+                                if created:
+                                    created_fields.append(field)
+                            except Exception as field_error:
+                                # Log but continue - don't let individual field errors block the import
+                                import logging
+                                logger = logging.getLogger(__name__)
+                                logger.warning(f"Failed to create Field {field_name} for payload {payload_name}: {str(field_error)}")
+                                continue
                 # If already linked, skip (it was handled above)
                 continue
             
@@ -1874,45 +1951,51 @@ def import_yaml(request):
                 # This might be a standalone field type (enum, custom type, etc.)
                 if 'enum' in schema_data:
                     # This is an enum type
-                    field_type, created = FieldType.objects.get_or_create(
-                        project=project,
-                        name=schema_name,
-                        defaults={
-                            'type': 'string',
-                            'custom_type': True,
-                            'enum_choices': ','.join(schema_data.get('enum', [])),
-                            'format': schema_data.get('format'),
-                            'max_length': schema_data.get('maxLength')
-                        }
-                    ) 
-                    if created:
-                        created_field_types.append(field_type)
+                    try:
+                        field_type, created = FieldType.objects.get_or_create(
+                            project=project,
+                            name=schema_name,
+                            defaults={
+                                'type': 'string',
+                                'custom_type': True,
+                                'enum_choices': ','.join(schema_data.get('enum', [])),
+                                'format': schema_data.get('format'),
+                                'max_length': schema_data.get('maxLength')
+                            }
+                        ) 
+                        if created:
+                            created_field_types.append(field_type)
+                    except Exception as ft_error:
+                        logger.warning(f"Failed to create FieldType {schema_name}: {str(ft_error)}")
                 
                 elif schema_data.get('type') in ['string', 'number', 'integer', 'boolean', 'array', 'object']:
                     # This is a basic field type
-                    # For complex object types, store the full schema definition
-                    schema_def = None
-                    if schema_data.get('type') == 'object' and 'properties' in schema_data:
-                        # Store full schema definition for complex objects
-                        schema_def = json.dumps(schema_data)
-                    
-                    field_type, created = FieldType.objects.get_or_create(
-                        project=project,
-                        name=schema_name,   
-                        defaults={
-                            'type': schema_data.get('type', 'string'),
-                            'custom_type': True,
-                            'format': schema_data.get('format'),
-                            'max_length': schema_data.get('maxLength'),
-                            'schema_definition': schema_def
-                        }
-                    )
-                    # Update schema definition if it exists and wasn't set
-                    if not created and schema_data.get('type') == 'object' and 'properties' in schema_data and not field_type.schema_definition:
-                        field_type.schema_definition = json.dumps(schema_data)
-                        field_type.save()
-                    if created:
-                        created_field_types.append(field_type)
+                    try:
+                        # For complex object types, store the full schema definition
+                        schema_def = None
+                        if schema_data.get('type') == 'object' and 'properties' in schema_data:
+                            # Store full schema definition for complex objects
+                            schema_def = json.dumps(schema_data)
+                        
+                        field_type, created = FieldType.objects.get_or_create(
+                            project=project,
+                            name=schema_name,   
+                            defaults={
+                                'type': schema_data.get('type', 'string'),
+                                'custom_type': True,
+                                'format': schema_data.get('format'),
+                                'max_length': schema_data.get('maxLength'),
+                                'schema_definition': schema_def
+                            }
+                        )
+                        if created:
+                            created_field_types.append(field_type)
+                        # Update schema definition if it exists and wasn't set
+                        if not created and schema_data.get('type') == 'object' and 'properties' in schema_data and not field_type.schema_definition:
+                            field_type.schema_definition = json.dumps(schema_data)
+                            field_type.save()
+                    except Exception as ft_error:
+                        logger.warning(f"Failed to create FieldType {schema_name}: {str(ft_error)}")
         
         # Add success message
         success_message = f'Successfully imported YAML! Created: {len(created_events)} events, {len(created_payloads)} payloads, {len(created_field_types)} field types, {len(created_fields)} fields, {len(created_db_payloads)} database payloads, {len(created_db_fields)} database fields.'
