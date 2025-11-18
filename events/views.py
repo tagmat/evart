@@ -2015,11 +2015,24 @@ def import_yaml(request):
         })
         
     except Exception as e:
-        # Add error message
-        error_message = f'Import failed: {str(e)}'
+        # Add detailed error message with exception type and message
+        import traceback
+        error_details = str(e)
+        error_type = type(e).__name__
         
-        # Return JSON response for AJAX requests
+        # Get the traceback for debugging
+        tb_str = traceback.format_exc()
+        
+        # Create a detailed error message
+        error_message = f'Import failed: {error_type}: {error_details}'
+        
+        # Log the full traceback for debugging
+        logger.error(f"Import failed with error: {error_type}: {error_details}\n{tb_str}")
+        
+        # Return JSON response for AJAX requests with detailed error
         return JsonResponse({
             'success': False,
-            'error': error_message
+            'error': error_message,
+            'error_type': error_type,
+            'error_details': error_details
         })
