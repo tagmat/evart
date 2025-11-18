@@ -4,7 +4,8 @@ import json
 import logging
 from django.contrib.admin.views.decorators import staff_member_required
 from django.db.models import Q
-from django.db.utils import OperationalError, IntegrityError
+from django.db import transaction, connection
+from django.db.utils import OperationalError, IntegrityError, DatabaseError
 from django.shortcuts import HttpResponse, render, redirect
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -26,34 +27,18 @@ def create_or_get_field_type(project, field_data, created_field_types):
             enum_choices = ','.join(field_data.get('enum', []))
             # Create a unique name for enum types
             enum_type_name = f"{field_type_name}_enum_{hash(enum_choices) % 10000}"
-            
-            # Try to get existing first to avoid transaction issues
-            try:
-                field_type = FieldType.objects.get(project=project, name=enum_type_name)
-                created = False
-            except FieldType.DoesNotExist:
-                # Doesn't exist, try to create it
-                try:
-                    field_type = FieldType.objects.create(
-                        project=project,
-                        name=enum_type_name,
-                        type='string',
-                        custom_type=True,
-                        enum_choices=enum_choices,
-                        format=field_data.get('format'),
-                        max_length=field_data.get('maxLength')
-                    )
-                    created = True
-                except (IntegrityError, OperationalError, Exception) as db_error:
-                    # If creation fails, try to get it again (might have been created by another process)
-                    logger.warning(f"Failed to create FieldType {enum_type_name}, trying to get existing: {str(db_error)}")
-                    try:
-                        field_type = FieldType.objects.get(project=project, name=enum_type_name)
-                        created = False
-                    except FieldType.DoesNotExist:
-                        # If it doesn't exist and we can't create it, use fallback
-                        logger.error(f"FieldType {enum_type_name} does not exist and cannot be created: {str(db_error)}")
-                        return _get_fallback_field_type(project)
+            field_type = _safe_get_or_create_field_type(
+                project=project,
+                name=enum_type_name,
+                defaults={
+                    'type': 'string',
+                    'custom_type': True,
+                    'enum_choices': enum_choices,
+                    'format': field_data.get('format'),
+                    'max_length': field_data.get('maxLength')
+                },
+                created_field_types=created_field_types
+            )
         else:
             # Handle regular field types - create unique types for different formats
             format_value = field_data.get('format')
@@ -63,35 +48,17 @@ def create_or_get_field_type(project, field_data, created_field_types):
             else:
                 field_type_name_with_format = field_type_name
             
-            # Try to get existing first to avoid transaction issues
-            try:
-                field_type = FieldType.objects.get(project=project, name=field_type_name_with_format)
-                created = False
-            except FieldType.DoesNotExist:
-                # Doesn't exist, try to create it
-                try:
-                    field_type = FieldType.objects.create(
-                        project=project,
-                        name=field_type_name_with_format,
-                        type=field_type_name,
-                        custom_type=False,
-                        format=format_value,
-                        max_length=field_data.get('maxLength')
-                    )
-                    created = True
-                except (IntegrityError, OperationalError, Exception) as db_error:
-                    # If creation fails, try to get it again (might have been created by another process)
-                    logger.warning(f"Failed to create FieldType {field_type_name_with_format}, trying to get existing: {str(db_error)}")
-                    try:
-                        field_type = FieldType.objects.get(project=project, name=field_type_name_with_format)
-                        created = False
-                    except FieldType.DoesNotExist:
-                        # If it doesn't exist and we can't create it, use fallback
-                        logger.error(f"FieldType {field_type_name_with_format} does not exist and cannot be created: {str(db_error)}")
-                        return _get_fallback_field_type(project)
-        
-        if created:
-            created_field_types.append(field_type)
+            field_type = _safe_get_or_create_field_type(
+                project=project,
+                name=field_type_name_with_format,
+                defaults={
+                    'type': field_type_name,
+                    'custom_type': False,
+                    'format': format_value,
+                    'max_length': field_data.get('maxLength')
+                },
+                created_field_types=created_field_types
+            )
         
         return field_type
     except Exception as e:
@@ -100,40 +67,109 @@ def create_or_get_field_type(project, field_data, created_field_types):
         return _get_fallback_field_type(project)
 
 
+def _safe_get_or_create_field_type(project, name, defaults, created_field_types):
+    """Safely get or create a FieldType with proper transaction and connection handling"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Close any stale connections before attempting operation
+            connection.close_if_unusable_or_obsolete()
+            
+            # Try to get existing first
+            try:
+                field_type = FieldType.objects.get(project=project, name=name)
+                return field_type
+            except FieldType.DoesNotExist:
+                # Doesn't exist, try to create it in a separate transaction
+                try:
+                    with transaction.atomic():
+                        field_type = FieldType.objects.create(
+                            project=project,
+                            name=name,
+                            **defaults
+                        )
+                        created_field_types.append(field_type)
+                        return field_type
+                except (IntegrityError, OperationalError) as db_error:
+                    # If creation fails due to constraint, try to get it again
+                    # (might have been created by another process or concurrent request)
+                    if attempt < max_retries - 1:
+                        # Reset connection and retry
+                        connection.close()
+                        continue
+                    else:
+                        # Last attempt - try to get it one more time
+                        try:
+                            return FieldType.objects.get(project=project, name=name)
+                        except FieldType.DoesNotExist:
+                            logger.error(f"FieldType {name} does not exist and cannot be created after {max_retries} attempts: {str(db_error)}")
+                            return _get_fallback_field_type(project)
+                except (DatabaseError, Exception) as db_error:
+                    # For other database errors, reset connection and retry
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Database error creating FieldType {name} (attempt {attempt + 1}): {str(db_error)}")
+                        connection.close()
+                        continue
+                    else:
+                        logger.error(f"Failed to create FieldType {name} after {max_retries} attempts: {str(db_error)}")
+                        return _get_fallback_field_type(project)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Unexpected error creating FieldType {name} (attempt {attempt + 1}): {str(e)}")
+                connection.close()
+                continue
+            else:
+                logger.error(f"Failed to create FieldType {name} after {max_retries} attempts: {str(e)}")
+                return _get_fallback_field_type(project)
+    
+    # Should never reach here, but just in case
+    return _get_fallback_field_type(project)
+
+
 def _get_fallback_field_type(project):
     """Get or create a default string field type as fallback"""
     try:
+        connection.close_if_unusable_or_obsolete()
+        
         # Try to get existing first
         try:
             return FieldType.objects.get(project=project, name='string')
         except FieldType.DoesNotExist:
-            # Doesn't exist, try to create it
+            # Doesn't exist, try to create it in a separate transaction
             try:
-                return FieldType.objects.create(
-                    project=project,
-                    name='string',
-                    type='string',
-                    custom_type=False
-                )
-            except (IntegrityError, OperationalError, Exception) as create_error:
+                with transaction.atomic():
+                    return FieldType.objects.create(
+                        project=project,
+                        name='string',
+                        type='string',
+                        custom_type=False
+                    )
+            except (IntegrityError, OperationalError):
                 # If creation fails, try to get it again
-                logger.warning(f"Fallback FieldType creation failed, trying to get existing: {str(create_error)}")
                 try:
                     return FieldType.objects.get(project=project, name='string')
                 except FieldType.DoesNotExist:
-                    # Try to get any existing string type
-                    try:
-                        return FieldType.objects.filter(project=project, name='string').first() or \
-                               FieldType.objects.filter(project=project, type='string').first() or \
-                               FieldType.objects.filter(project=project).first()
-                    except Exception:
-                        # Last resort - return None and let the caller handle it
-                        logger.critical("Could not get any FieldType, even as fallback")
-                        return None
+                    pass
+            except Exception as create_error:
+                logger.warning(f"Fallback FieldType creation failed: {str(create_error)}")
+                connection.close()
+        
+        # Try to get any existing string type
+        try:
+            return FieldType.objects.filter(project=project, name='string').first() or \
+                   FieldType.objects.filter(project=project, type='string').first() or \
+                   FieldType.objects.filter(project=project).first()
+        except Exception:
+            pass
+        
+        # Last resort - return None and let the caller handle it
+        logger.critical("Could not get any FieldType, even as fallback")
+        return None
     except Exception as fallback_error:
         # Even fallback failed, try to get any existing string type
         logger.error(f"Fallback FieldType creation also failed: {str(fallback_error)}")
         try:
+            connection.close()
             return FieldType.objects.filter(project=project, name='string').first() or \
                    FieldType.objects.filter(project=project, type='string').first() or \
                    FieldType.objects.filter(project=project).first()
