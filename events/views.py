@@ -1,5 +1,6 @@
 import yaml
 import re
+import json
 from django.contrib.admin.views.decorators import staff_member_required
 from django.db.models import Q
 from django.shortcuts import HttpResponse, render, redirect
@@ -129,11 +130,11 @@ def generate_full_yaml(request, service_id):
     configuration = {
         'asyncapi': service.asyncapi_version,
         'info': {
-            'title': "{0} V2 {1} Service".format(service.project.name, service.name),
+            'title': service.original_title if service.original_title else "{0} V2 {1} Service".format(service.project.name, service.name),
             'version': service.version,
             'description': service.description if service.description is not None else "N/A",
-            'x-general-name': service.name.lower(),
-            'x-service-name': service.kebab_name(),
+            'x-general-name': service.x_general_name if service.x_general_name else service.name.lower(),
+            'x-service-name': service.x_service_name if service.x_service_name else service.kebab_name(),
             'x-service-ip': "change-this"
         },
         'servers': {
@@ -170,12 +171,8 @@ def generate_full_yaml(request, service_id):
             channel_name: {'$ref': "#/components/messages/{0}".format(channel_name)}
         }
         
-        # Add response message for sync events
-        if event.is_sync and event.response_payload:
-            response_channel_name = channel_name + "Response"
-            messages_dict[response_channel_name] = {
-                '$ref': "#/components/messages/{0}".format(response_channel_name)
-            }
+        # Note: We don't add Response messages to main channels anymore
+        # Response channels are exported as separate channels if they exist as separate events
 
         # Build channel configuration with proper property ordering
         channel_config = {
@@ -196,7 +193,33 @@ def generate_full_yaml(request, service_id):
         configuration['channels'][channel_name] = channel_config
 
         # Create operations with simple names and direct message references
-        if not event.name.endswith('Response'):
+        # For Response channels, create operations if:
+        # 1. Base event is a receive (command) - most common case
+        # 2. Special bidirectional cases: certificateSignedResponse, dataTransferResponse (base is send but Response has operation)
+        # Notification responses (base is send) don't have operations except for special cases
+        is_response_channel = event.name.endswith('_response')
+        should_create_operation = True
+        
+        if is_response_channel:
+            # Find the base event name (without _response)
+            base_event_name = event.name.replace('_response', '')
+            # Check if base event exists
+            try:
+                base_event = Event.objects.get(domain=event.domain, name=base_event_name)
+                # Special bidirectional cases that have operations even though base is send
+                special_cases = ['certificate_signed', 'data_transfer']
+                is_special_case = base_event_name in special_cases
+                
+                # Create operation if:
+                # - Base event is a command (in consumes), OR
+                # - It's a special bidirectional case (certificateSignedResponse, dataTransferResponse)
+                should_create_operation = (base_event in service.consumes.all()) or \
+                                         (is_special_case and event in service.publishes.all() and base_event in service.publishes.all())
+            except Event.DoesNotExist:
+                # Base event doesn't exist, don't create operation
+                should_create_operation = False
+        
+        if should_create_operation:
             # Convert channel name to camelCase for operation name
             base_operation_name = channel_name[0].lower() + channel_name[1:]
             
@@ -217,8 +240,20 @@ def generate_full_yaml(request, service_id):
             # Use stored endpoint or generate default
             endpoint = event.endpoint if event.endpoint else "/{0}".format(channel_name)
             
+            # Determine action based on service relationship
+            # If event is in consumes, it's a receive operation
+            # If event is in publishes, it's a send operation
+            # If in both, default to receive
+            if event in service.consumes.all():
+                action = 'receive'
+            elif event in service.publishes.all():
+                action = 'send'
+            else:
+                # Default to receive if somehow not in either (shouldn't happen)
+                action = 'receive'
+            
             configuration['operations'][operation_name] = {
-                'action': 'receive',
+                'action': action,
                 'channel': {
                     '$ref': "#/channels/{0}".format(channel_name)
                 },
@@ -243,60 +278,37 @@ def generate_full_yaml(request, service_id):
             }
         }
 
-        # Create response message for sync operations
-        if event.is_sync and event.response_payload:
+        # Create response message for sync operations only if there's no separate Response channel event
+        # Check if a separate Response channel event exists
+        if event.is_sync and event.response_payload and not event.name.endswith('_response'):
             response_channel_name = channel_name + "Response"
-            # Create proper response title formatting with spacing
-            # Generate response title from channel name with proper spacing
-            response_title = ' '.join(word.capitalize() for word in re.findall(r'[A-Z][a-z]*', response_channel_name))
+            # Check if a separate Response channel event exists
+            response_event_exists = service.consumes.filter(name=event.name + '_response').exists() or \
+                                   service.publishes.filter(name=event.name + '_response').exists()
             
-            # Generate response summary based on the original event description
-            response_summary = f"Response with {event.description.lower()}" if event.description else f"{event.name.replace('_', ' ').title()} response"
-            
-            configuration['components']['messages'][response_channel_name] = {
-                'name': response_channel_name,
-                'title': response_title,
-                'summary': response_summary,
-                'contentType': 'application/json',
-                'payload': {
-                    '$ref': "#/components/schemas/{0}Payload".format(response_channel_name)
+            # Only create response message if there's no separate Response channel
+            if not response_event_exists:
+                # Create proper response title formatting with spacing
+                # Generate response title from channel name with proper spacing
+                response_title = ' '.join(word.capitalize() for word in re.findall(r'[A-Z][a-z]*', response_channel_name))
+                
+                # Generate response summary based on the original event description
+                response_summary = f"Response with {event.description.lower()}" if event.description else f"{event.name.replace('_', ' ').title()} response"
+                
+                configuration['components']['messages'][response_channel_name] = {
+                    'name': response_channel_name,
+                    'title': response_title,
+                    'summary': response_summary,
+                    'contentType': 'application/json',
+                    'payload': {
+                        '$ref': "#/components/schemas/{0}Payload".format(response_channel_name)
+                    }
                 }
-            }
 
 
     # Create payload schemas
     for payload in Payload.objects.all():
-        # Create main payload schema
-        payload_schema_name = "{0}Payload".format(payload.name)
-        configuration['components']['schemas'][payload_schema_name] = {
-            'type': 'object',
-            'properties': {
-                'fromService': {
-                    'type': 'string',
-                    'default': '',
-                    'description': 'ServiceID and name of the service that sent the event',
-                    'x-parser-schema-id': 'fromService'
-                },
-                'sentAt': {
-                    'type': 'string',
-                    'format': 'date-time',
-                    'default': '2025-01-01T00:00:00Z',
-                    'description': 'Date and time when the message was sent',
-                    'x-parser-schema-id': 'sentAt'
-                },
-                'timeToLive': {
-                    'type': 'integer',
-                    'default': 3600000,
-                    'description': 'Message time to live in milliseconds',
-                    'x-parser-schema-id': 'timeToLive'
-                },
-                'data': {
-                    '$ref': "#/components/schemas/Data_{0}Payload".format(payload.name)
-                }
-            }
-        }
-
-        # Create data schema
+        # First, collect data properties to determine if Data_* schema will be empty
         data_schema_name = "Data_{0}Payload".format(payload.name)
         data_properties = {}
         required_fields = []
@@ -310,26 +322,22 @@ def generate_full_yaml(request, service_id):
                     field_property = {
                         'type': 'string',
                         'enum': enum_choices,
-                        'description': field.description or field.name
+                        'x-type': 'string'
                     }
-                    # Create enum schema if not exists
-                    if field.type.name not in configuration['components']['schemas']:
-                        configuration['components']['schemas'][field.type.name] = {
-                            'type': 'string',
-                            'enum': enum_choices,
-                            'x-parser-schema-id': field.type.name
-                        }
+                    # Don't create separate enum schemas - enums should be inline in properties
+                    # Only create enum schema if it's referenced elsewhere (via $ref)
+                    # For now, keep enums inline to match original YAML format
                 else:
                     field_property = {
                         'type': field.type.type,
-                        'description': field.description or field.name
+                        'x-type': field.type.type
                     }
                     if field.type.max_length and field.type.max_length > 0:
                         field_property['maxLength'] = field.type.max_length
             else:
                 field_property = {
                     'type': field.type.type,
-                    'description': field.description or field.name
+                    'x-type': field.type.type
                 }
                 if field.type.format:
                     field_property['format'] = field.type.format
@@ -346,62 +354,110 @@ def generate_full_yaml(request, service_id):
                 # Handle schema reference
                 if field.schema_ref:
                     field_property = {'$ref': field.schema_ref}
+            
+            # Add description if field has one (but not if field_property is a $ref)
+            if field.description and '$ref' not in field_property:
+                field_property['description'] = field.description
 
             data_properties[field.name] = field_property
             
             if field.required:
                 required_fields.append(field.name)
 
-        schema_config = {
-            'type': 'object',
-            'properties': data_properties
-        }
+        # Create main payload schema
+        payload_schema_name = "{0}Payload".format(payload.name)
         
-        # Add description if payload has one
-        if payload.description:
-            schema_config['description'] = payload.description
+        # Determine if this is a Response payload and what type
+        is_response_payload = payload.name.endswith('Response')
+        is_notification_response = is_response_payload and any(
+            keyword in payload.name for keyword in ['Notification', 'StatusNotification']
+        )
         
-        # Only add required if there are required fields
-        if required_fields:
-            schema_config['required'] = required_fields
-            
-        configuration['components']['schemas'][data_schema_name] = schema_config
-
-    # Create messages for payloads that aren't linked to events (orphaned payloads)
-    for payload in Payload.objects.all():
-        # Check if this payload is already linked to an event
-        is_linked = False
-        for event in service.consumes.all().union(service.publishes.all()):
-            if (event.payload and event.payload.id == payload.id) or \
-               (event.response_payload and event.response_payload.id == payload.id):
-                is_linked = True
-                break
+        # Determine data property handling:
+        # 1. Empty Data_* for notification Response payloads → separate empty schema with $ref
+        # 2. Empty Data_* for other payloads → inline empty object
+        # 3. Non-empty Data_* for certain Response payloads → inline data (if it's a command response with simple structure)
+        # 4. Non-empty Data_* for others → separate schema with $ref
         
-        # If not linked, create a message for it
-        if not is_linked:
-            message_name = payload.name
-            title = ' '.join(word.capitalize() for word in re.findall(r'[A-Z][a-z]*', message_name))
-            
-            # Generate appropriate summary for orphaned messages
-            if message_name.endswith('Response'):
-                # For response messages, use a simple response format with proper capitalization
-                base_name = message_name.replace('Response', '')
-                # Convert PascalCase to proper case
-                base_name_proper = ' '.join(re.findall(r'[A-Z][a-z]*', base_name)).lower()
-                summary = f"{base_name_proper} response"
-            else:
-                # For regular messages, use the payload description if available
-                summary = payload.description if payload.description else title.lower()
-            
-            configuration['components']['messages'][message_name] = {
-                'name': message_name,
-                'title': title,
-                'summary': summary,
-                'contentType': 'application/json',
-                'payload': {
-                    '$ref': "#/components/schemas/{0}Payload".format(payload.name)
-                }
+        # Response payloads that should use inline data (command responses with simple structure)
+        inline_response_payloads = [
+            'CustomerInformationResponse', 'GetDisplayMessagesResponse', 
+            'GetInstalledCertificateIdsResponse', 'GetMonitoringReportResponse',
+            'GetReportResponse', 'GetTransactionStatusResponse'
+        ]
+        should_use_inline = payload.name in inline_response_payloads and data_properties
+        
+        if should_use_inline:
+            # Use inline data object for these specific Response payloads
+            data_property = {
+                'type': 'object',
+                'properties': data_properties
             }
+            if required_fields:
+                data_property['required'] = required_fields
+        elif data_properties:
+            # Data_* schema has properties, use reference
+            data_property = {
+                '$ref': "#/components/schemas/{0}".format(data_schema_name)
+            }
+        elif is_notification_response:
+            # Empty Data_* for notification Response payloads → separate empty schema with $ref
+            data_property = {
+                '$ref': "#/components/schemas/{0}".format(data_schema_name)
+            }
+        else:
+            # Empty Data_* for other payloads → inline empty object
+            data_property = {
+                'type': 'object',
+                'properties': {}
+            }
+        
+        configuration['components']['schemas'][payload_schema_name] = {
+            'type': 'object',
+            'properties': {
+                'fromService': {
+                    'type': 'string',
+                    'default': '',
+                    'x-parser-schema-id': 'fromService'
+                },
+                'sentAt': {
+                    'type': 'string',
+                    'format': 'date-time',
+                    'default': '2025-01-01T00:00:00Z',
+                    'x-parser-schema-id': 'sentAt'
+                },
+                'timeToLive': {
+                    'type': 'integer',
+                    'default': 3600000,
+                    'x-parser-schema-id': 'timeToLive'
+                },
+                'data': data_property
+            }
+        }
+
+        # Create Data_* schema if:
+        # 1. It has properties and we're not using inline data, OR
+        # 2. It's empty but it's a notification Response payload (needs separate empty schema)
+        if (data_properties and not should_use_inline) or (not data_properties and is_notification_response):
+            schema_config = {
+                'type': 'object',
+                'properties': data_properties
+            }
+            
+            # Add description if payload has one
+            if payload.description:
+                schema_config['description'] = payload.description
+            
+            # Only add required if there are required fields
+            if required_fields:
+                schema_config['required'] = required_fields
+                
+            configuration['components']['schemas'][data_schema_name] = schema_config
+
+    # Don't create messages for orphaned payloads - standalone payloads are just schemas, not messages
+    # Messages are only created for payloads linked to events (channels)
+    # This matches the original YAML format where standalone payloads like GetVariablesAckPayload
+    # exist as schemas but don't have corresponding messages
 
     for dbpayload in DatabasePayload.objects.all():
         properties = {}
@@ -410,14 +466,13 @@ def generate_full_yaml(request, service_id):
             if field.type.custom_type:
                 if field.type.enum_choices is not None:
                     enum_choices = field.type.enum_choices.replace(" ", "").split(",")
+                    # Use inline enum instead of separate schema to match original YAML format
                     properties[field.name] = {
-                        '$ref': "#/components/schemas/{0}".format(field.type.name)
-                    }
-                    configuration['components']['schemas'][field.type.name] = {
-                        'type': field.type.type,
+                        'type': 'string',
                         'enum': enum_choices,
-                        'x-parser-schema-id': field.type.name
+                        'description': field.description or field.name
                     }
+                    # Don't create separate enum schema - keep enums inline
                 else:
                     if field.type.type == "string":
                         properties[field.name] = {
@@ -481,6 +536,14 @@ def generate_full_yaml(request, service_id):
         schema_config['properties'] = properties
             
         configuration['components']['schemas']["{1}{0}".format(dbpayload.name, "DB_")] = schema_config
+
+    # Export complex object FieldType schemas (type='object', custom_type=True)
+    # These are standalone schemas like ChargingProfile, ChargingSchedule, etc.
+    for field_type in FieldType.objects.filter(project=service.project, type='object', custom_type=True):
+        schema_def = field_type.get_schema_definition()
+        if schema_def:
+            # Use the stored schema definition as-is (don't add x-parser-schema-id)
+            configuration['components']['schemas'][field_type.name] = schema_def.copy()
 
     # Custom YAML representer to force double quotes for strings
     class DoubleQuotedString(str):
@@ -576,7 +639,23 @@ def parse_yaml_for_preview(yaml_content):
     # Extract basic info
     info = yaml_data.get('info', {})
     project_name = info.get('title', 'Imported Project').split(' ')[0]  # Extract project name
-    service_name = info.get('title', 'Imported Service').split(' ')[-2] if len(info.get('title', '').split(' ')) > 1 else 'Imported Service'
+    
+    # Extract service name: prefer x-service-name, otherwise try better parsing from title
+    # x-service-name is in kebab-case, convert to proper name
+    x_service_name = info.get('x-service-name', '')
+    if x_service_name:
+        # Convert kebab-case to title case (e.g., "ocpp-gateway-service" -> "Ocpp Gateway Service")
+        service_name = ' '.join(word.capitalize() for word in x_service_name.split('-'))
+    else:
+        # Fallback: extract from title - take last 2-3 words as service name
+        title_words = info.get('title', 'Imported Service').split(' ')
+        if len(title_words) >= 3:
+            # Take last 2 words (e.g., "OCPP Gateway Service OCPP Bridge" -> "OCPP Bridge")
+            service_name = ' '.join(title_words[-2:])
+        elif len(title_words) == 2:
+            service_name = title_words[1]
+        else:
+            service_name = 'Imported Service'
     
     # Create preview data structures
     preview_data = {
@@ -617,7 +696,9 @@ def parse_yaml_for_preview(yaml_content):
             'slug_name': service.slug_name,
             'asyncapi_version': service.asyncapi_version,
             'version': service.version,
-            'description': service.description
+            'description': service.description,
+            'x_general_name': service.x_general_name,
+            'x_service_name': service.x_service_name
         })
     
     # Get existing events
@@ -751,6 +832,8 @@ def parse_yaml_for_preview(yaml_content):
     
     # Service preview - check for exact match
     service_slug = re.sub(r'[^a-zA-Z0-9]', '', service_name.lower())[:200]
+    x_general_name = info.get('x-general-name', '')
+    x_service_name = info.get('x-service-name', '')
     service_preview = {
         'name': service_name,
         'project_name': project_name,
@@ -758,6 +841,8 @@ def parse_yaml_for_preview(yaml_content):
         'asyncapi_version': yaml_data.get('asyncapi', '3.0.0'),
         'version': info.get('version', '1.0.0'),
         'description': info.get('description', 'Imported service'),
+        'x_general_name': x_general_name,
+        'x_service_name': x_service_name,
         'is_existing': False,
         'existing_match': None,
         'is_conflict': False,
@@ -779,6 +864,10 @@ def parse_yaml_for_preview(yaml_content):
                 conflicts.append(f"version: existing='{existing_service['version']}', new='{service_preview['version']}'")
             if existing_service['description'] != service_preview['description']:
                 conflicts.append(f"description: existing='{existing_service['description']}', new='{service_preview['description']}'")
+            if existing_service.get('x_general_name') != x_general_name:
+                conflicts.append(f"x_general_name: existing='{existing_service.get('x_general_name')}', new='{x_general_name}'")
+            if existing_service.get('x_service_name') != x_service_name:
+                conflicts.append(f"x_service_name: existing='{existing_service.get('x_service_name')}', new='{x_service_name}'")
             
             if not conflicts:
                 service_preview['is_existing'] = True
@@ -1215,7 +1304,23 @@ def import_yaml(request):
         # Extract basic info
         info = yaml_data.get('info', {})
         project_name = info.get('title', 'Imported Project').split(' ')[0]  # Extract project name
-        service_name = info.get('title', 'Imported Service').split(' ')[-2] if len(info.get('title', '').split(' ')) > 1 else 'Imported Service'
+        
+        # Extract service name: prefer x-service-name, otherwise try better parsing from title
+        # x-service-name is in kebab-case, convert to proper name
+        x_service_name = info.get('x-service-name', '')
+        if x_service_name:
+            # Convert kebab-case to title case (e.g., "ocpp-gateway-service" -> "Ocpp Gateway Service")
+            service_name = ' '.join(word.capitalize() for word in x_service_name.split('-'))
+        else:
+            # Fallback: extract from title - take last 2-3 words as service name
+            title_words = info.get('title', 'Imported Service').split(' ')
+            if len(title_words) >= 3:
+                # Take last 2 words (e.g., "OCPP Gateway Service OCPP Bridge" -> "OCPP Bridge")
+                service_name = ' '.join(title_words[-2:])
+            elif len(title_words) == 2:
+                service_name = title_words[1]
+            else:
+                service_name = 'Imported Service'
         
         # Create or get project
         project_slug = re.sub(r'[^a-zA-Z0-9]', '', project_name.lower())[:20]
@@ -1226,6 +1331,7 @@ def import_yaml(request):
         
         # Create or get service
         service_slug = re.sub(r'[^a-zA-Z0-9]', '', service_name.lower())[:200]
+        original_title = info.get('title', '')
         service, created = Service.objects.get_or_create(
             project=project,
             slug_name=service_slug,
@@ -1233,9 +1339,18 @@ def import_yaml(request):
                 'name': service_name,
                 'asyncapi_version': yaml_data.get('asyncapi', '3.0.0'),
                 'version': info.get('version', '1.0.0'),
-                'description': info.get('description', 'Imported service')
+                'description': info.get('description', 'Imported service'),
+                'original_title': original_title,
+                'x_general_name': info.get('x-general-name', ''),
+                'x_service_name': info.get('x-service-name', '')
             }
         )
+        # Update metadata even if service already exists
+        if not created:
+            service.x_general_name = info.get('x-general-name', '') or service.x_general_name
+            service.x_service_name = info.get('x-service-name', '') or service.x_service_name
+            service.original_title = original_title or service.original_title
+            service.save()
         
         # Create domain
         domain, created = Domain.objects.get_or_create(
@@ -1375,23 +1490,46 @@ def import_yaml(request):
                 channel_name = channel_ref.split('/')[-1]
                 
                 # Find the corresponding event
-                event_name = channel_name.replace('Response', '')
-                event_snake_name = re.sub('([A-Z]+)', r'_\1', event_name).lower().strip('_')
+                # Try to find the exact event first (for Response channels)
+                event_snake_name = re.sub('([A-Z]+)', r'_\1', channel_name).lower().strip('_')
+                event = None
                 
                 try:
                     event = Event.objects.get(domain=domain, name=event_snake_name)
-                    
-                    # Store endpoint if provided
-                    if endpoint and action == 'receive':
-                        event.endpoint = endpoint
-                        event.save()
-                    
-                    if action == 'receive':
-                        service.consumes.add(event)
-                    elif action == 'send':
+                except Event.DoesNotExist:
+                    # If not found, try without Response suffix (for backward compatibility)
+                    event_name = channel_name.replace('Response', '')
+                    event_snake_name = re.sub('([A-Z]+)', r'_\1', event_name).lower().strip('_')
+                    try:
+                        event = Event.objects.get(domain=domain, name=event_snake_name)
+                    except Event.DoesNotExist:
+                        continue
+                
+                # Store endpoint if provided (for both send and receive operations)
+                if endpoint:
+                    event.endpoint = endpoint
+                    event.save()
+                
+                if action == 'receive':
+                    service.consumes.add(event)
+                elif action == 'send':
+                    service.publishes.add(event)
+        
+        # Ensure all Response channels are linked to service
+        # This is a safety net to catch any Response events that weren't linked via operations
+        # Django's .add() is idempotent, so it's safe to call even if already linked
+        for channel_name, channel_data in channels.items():
+            if channel_name.endswith('Response'):
+                event_snake_name = re.sub('([A-Z]+)', r'_\1', channel_name).lower().strip('_')
+                try:
+                    event = Event.objects.get(domain=domain, name=event_snake_name)
+                    # Response channels are typically published (sent) by the service
+                    # Check if already linked to avoid unnecessary database calls
+                    if not service.publishes.filter(id=event.id).exists() and not service.consumes.filter(id=event.id).exists():
                         service.publishes.add(event)
                 except Event.DoesNotExist:
-                    continue
+                    # Event doesn't exist, skip
+                    pass
         
         # Process schemas to create field types and fields
         created_field_types = []
@@ -1399,59 +1537,149 @@ def import_yaml(request):
         created_db_payloads = []
         created_db_fields = []
         
+        # Collect all payload names that are already linked to channels/operations
+        linked_payload_names = set()
+        for event in created_events:
+            if event.payload:
+                linked_payload_names.add(event.payload.name)
+            if event.response_payload:
+                linked_payload_names.add(event.response_payload.name)
+        # Also check existing events
+        for event in Event.objects.filter(domain__project=project):
+            if event.payload:
+                linked_payload_names.add(event.payload.name)
+            if event.response_payload:
+                linked_payload_names.add(event.response_payload.name)
+        
         for schema_name, schema_data in schemas.items():
             if schema_name.startswith('Data_'):
                 # This is a data schema, find corresponding payload
                 payload_name = schema_name.replace('Data_', '').replace('Payload', '')
                 try:
                     payload = Payload.objects.get(project=project, name=payload_name)
-                    
-                    # Process properties
-                    properties = schema_data.get('properties', {})
-                    required_fields = schema_data.get('required', [])
-                    
-                    for field_name, field_data in properties.items():
-                        # Create or get field type with comprehensive handling
-                        field_type = create_or_get_field_type(project, field_data, created_field_types)
-                        
-                        # Handle array items and schema references
-                        array_items_type = None
-                        array_items_ref = None
-                        schema_ref = None
-                        
-                        # Check for array items
-                        if field_data.get('type') == 'array' and 'items' in field_data:
-                            items = field_data['items']
-                            if isinstance(items, dict):
-                                if 'type' in items:
-                                    array_items_type = items['type']
-                                if '$ref' in items:
-                                    array_items_ref = items['$ref']
-                        
-                        # Check for schema reference
-                        if '$ref' in field_data:
-                            schema_ref = field_data['$ref']
-                        
-                        # Create field with all attributes
-                        field, created = Field.objects.get_or_create(
-                            payload=payload,
-                            name=field_name,
+                except Payload.DoesNotExist:
+                    # Payload doesn't exist - check if it's a standalone payload
+                    # (i.e., the corresponding Payload schema exists in schemas)
+                    payload_schema_name = f'{payload_name}Payload'
+                    if payload_schema_name in schemas and payload_name not in linked_payload_names:
+                        # This is a standalone payload - create it
+                        payload_schema_data = schemas[payload_schema_name]
+                        payload, created = Payload.objects.get_or_create(
+                            project=project,
+                            name=payload_name,
                             defaults={
-                                'type': field_type,
-                                'required': field_name in required_fields,
-                                'description': field_data.get('description', ''),
-                                'minimum': field_data.get('minimum'),
-                                'maximum': field_data.get('maximum'),
-                                'array_items_type': array_items_type,
-                                'array_items_ref': array_items_ref,
-                                'schema_ref': schema_ref
+                                'name': payload_name,
+                                'description': payload_schema_data.get('description', '')
                             }
                         )
                         if created:
-                            created_fields.append(field)
+                            created_payloads.append(payload)
+                    else:
+                        # Not a standalone payload or already linked, skip
+                        continue
+                
+                # Process properties
+                properties = schema_data.get('properties', {})
+                required_fields = schema_data.get('required', [])
+                
+                for field_name, field_data in properties.items():
+                    # Create or get field type with comprehensive handling
+                    field_type = create_or_get_field_type(project, field_data, created_field_types)
+                    
+                    # Handle array items and schema references
+                    array_items_type = None
+                    array_items_ref = None
+                    schema_ref = None
+                    
+                    # Check for array items
+                    if field_data.get('type') == 'array' and 'items' in field_data:
+                        items = field_data['items']
+                        if isinstance(items, dict):
+                            if 'type' in items:
+                                array_items_type = items['type']
+                            if '$ref' in items:
+                                array_items_ref = items['$ref']
+                    
+                    # Check for schema reference
+                    if '$ref' in field_data:
+                        schema_ref = field_data['$ref']
+                    
+                    # Create field with all attributes
+                    field, created = Field.objects.get_or_create(
+                        payload=payload,
+                        name=field_name,
+                        defaults={
+                            'type': field_type,
+                            'required': field_name in required_fields,
+                            'description': field_data.get('description', ''),
+                            'minimum': field_data.get('minimum'),
+                            'maximum': field_data.get('maximum'),
+                            'array_items_type': array_items_type,
+                            'array_items_ref': array_items_ref,
+                            'schema_ref': schema_ref
+                        }
+                    )
+                    if created:
+                        created_fields.append(field)
+            
+            elif schema_name.endswith('Payload') and not schema_name.startswith('Data_') and not schema_name.startswith('DB_'):
+                # This is a main payload schema - check if it has inline data object
+                # (instead of $ref to Data_* schema)
+                payload_name = schema_name.replace('Payload', '')
+                payload_properties = schema_data.get('properties', {})
+                data_property = payload_properties.get('data', {})
+                
+                # Check if data property is an inline object (not a $ref)
+                if isinstance(data_property, dict) and 'type' in data_property and data_property.get('type') == 'object':
+                    # This payload has inline data object, not a Data_* schema reference
+                    try:
+                        payload = Payload.objects.get(project=project, name=payload_name)
                         
-                except Payload.DoesNotExist:
-                    continue
+                        # Extract properties from inline data object
+                        inline_data_properties = data_property.get('properties', {})
+                        inline_required_fields = data_property.get('required', [])
+                        
+                        for field_name, field_data in inline_data_properties.items():
+                            # Create or get field type
+                            field_type = create_or_get_field_type(project, field_data, created_field_types)
+                            
+                            # Handle array items and schema references
+                            array_items_type = None
+                            array_items_ref = None
+                            schema_ref = None
+                            
+                            if field_data.get('type') == 'array' and 'items' in field_data:
+                                items = field_data['items']
+                                if isinstance(items, dict):
+                                    if 'type' in items:
+                                        array_items_type = items['type']
+                                    if '$ref' in items:
+                                        array_items_ref = items['$ref']
+                            
+                            if '$ref' in field_data:
+                                schema_ref = field_data['$ref']
+                            
+                            # Create field
+                            field, created = Field.objects.get_or_create(
+                                payload=payload,
+                                name=field_name,
+                                defaults={
+                                    'type': field_type,
+                                    'required': field_name in inline_required_fields,
+                                    'description': field_data.get('description', ''),
+                                    'minimum': field_data.get('minimum'),
+                                    'maximum': field_data.get('maximum'),
+                                    'array_items_type': array_items_type,
+                                    'array_items_ref': array_items_ref,
+                                    'schema_ref': schema_ref
+                                }
+                            )
+                            if created:
+                                created_fields.append(field)
+                                
+                    except Payload.DoesNotExist:
+                        # Payload doesn't exist yet, skip (it will be handled elsewhere)
+                        continue
             
             elif schema_name.startswith('DB_'):
                 # This is a database schema
@@ -1501,7 +1729,115 @@ def import_yaml(request):
                 service.database_payloads.add(db_payload)
             
             elif schema_name.endswith('Payload'):
-                # This is a main payload schema - we already handled these above
+                # This is a main payload schema
+                # Check if it's already linked to a channel/operation
+                payload_name = schema_name.replace('Payload', '')
+                if payload_name not in linked_payload_names:
+                    # This is a standalone payload not linked to any channel/operation
+                    # Import it as a standalone payload
+                    payload, created = Payload.objects.get_or_create(
+                        project=project,
+                        name=payload_name,
+                        defaults={
+                            'name': payload_name,
+                            'description': schema_data.get('description', '')
+                        }
+                    )
+                    if created:
+                        created_payloads.append(payload)
+                    
+                    # Check if payload has inline data object or Data_* schema
+                    payload_properties = schema_data.get('properties', {})
+                    data_property = payload_properties.get('data', {})
+                    
+                    # Check if data property is an inline object (not a $ref)
+                    if isinstance(data_property, dict) and 'type' in data_property and data_property.get('type') == 'object':
+                        # Process inline data object
+                        inline_data_properties = data_property.get('properties', {})
+                        inline_required_fields = data_property.get('required', [])
+                        
+                        for field_name, field_data in inline_data_properties.items():
+                            field_type = create_or_get_field_type(project, field_data, created_field_types)
+                            
+                            array_items_type = None
+                            array_items_ref = None
+                            schema_ref = None
+                            
+                            if field_data.get('type') == 'array' and 'items' in field_data:
+                                items = field_data['items']
+                                if isinstance(items, dict):
+                                    if 'type' in items:
+                                        array_items_type = items['type']
+                                    if '$ref' in items:
+                                        array_items_ref = items['$ref']
+                            
+                            if '$ref' in field_data:
+                                schema_ref = field_data['$ref']
+                            
+                            field, created = Field.objects.get_or_create(
+                                payload=payload,
+                                name=field_name,
+                                defaults={
+                                    'type': field_type,
+                                    'required': field_name in inline_required_fields,
+                                    'description': field_data.get('description', ''),
+                                    'minimum': field_data.get('minimum'),
+                                    'maximum': field_data.get('maximum'),
+                                    'array_items_type': array_items_type,
+                                    'array_items_ref': array_items_ref,
+                                    'schema_ref': schema_ref
+                                }
+                            )
+                            if created:
+                                created_fields.append(field)
+                    else:
+                        # Process the corresponding Data_* schema if it exists
+                        data_schema_name = f'Data_{schema_name}'
+                        if data_schema_name in schemas:
+                            data_schema_data = schemas[data_schema_name]
+                            properties = data_schema_data.get('properties', {})
+                            required_fields = data_schema_data.get('required', [])
+                        
+                        for field_name, field_data in properties.items():
+                            # Create or get field type with comprehensive handling
+                            field_type = create_or_get_field_type(project, field_data, created_field_types)
+                            
+                            # Handle array items and schema references
+                            array_items_type = None
+                            array_items_ref = None
+                            schema_ref = None
+                            
+                            # Check for array items
+                            if field_data.get('type') == 'array' and 'items' in field_data:
+                                items = field_data['items']
+                                if isinstance(items, dict):
+                                    if 'type' in items:
+                                        array_items_type = items['type']
+                                    if '$ref' in items:
+                                        array_items_ref = items['$ref']
+                            
+                            # Check for schema reference
+                            if '$ref' in field_data:
+                                schema_ref = field_data['$ref']
+                            
+                            # Create field with all attributes
+                            field, created = Field.objects.get_or_create(
+                                payload=payload,
+                                name=field_name,
+                                defaults={
+                                    'type': field_type,
+                                    'required': field_name in required_fields,
+                                    'description': field_data.get('description', ''),
+                                    'minimum': field_data.get('minimum'),
+                                    'maximum': field_data.get('maximum'),
+                                    'array_items_type': array_items_type,
+                                    'array_items_ref': array_items_ref,
+                                    'schema_ref': schema_ref
+                                }
+                            )
+                            if created:
+                                created_fields.append(field)
+                # If already linked, skip (it was handled above)
                 continue
             
             else:
@@ -1524,6 +1860,12 @@ def import_yaml(request):
                 
                 elif schema_data.get('type') in ['string', 'number', 'integer', 'boolean', 'array', 'object']:
                     # This is a basic field type
+                    # For complex object types, store the full schema definition
+                    schema_def = None
+                    if schema_data.get('type') == 'object' and 'properties' in schema_data:
+                        # Store full schema definition for complex objects
+                        schema_def = json.dumps(schema_data)
+                    
                     field_type, created = FieldType.objects.get_or_create(
                         project=project,
                         name=schema_name,   
@@ -1531,9 +1873,14 @@ def import_yaml(request):
                             'type': schema_data.get('type', 'string'),
                             'custom_type': True,
                             'format': schema_data.get('format'),
-                            'max_length': schema_data.get('maxLength')
+                            'max_length': schema_data.get('maxLength'),
+                            'schema_definition': schema_def
                         }
                     )
+                    # Update schema definition if it exists and wasn't set
+                    if not created and schema_data.get('type') == 'object' and 'properties' in schema_data and not field_type.schema_definition:
+                        field_type.schema_definition = json.dumps(schema_data)
+                        field_type.save()
                     if created:
                         created_field_types.append(field_type)
         

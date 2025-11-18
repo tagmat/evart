@@ -1,4 +1,5 @@
 import re
+import json
 
 from django.db import models
 from django.core.exceptions import ValidationError
@@ -129,9 +130,26 @@ class FieldType(models.Model):
     type = models.CharField(max_length=200, default='string')
     protobuf_type = models.CharField(max_length=200, default='string')
     format = models.CharField(max_length=200, blank=True, null=True)
+    schema_definition = models.TextField(blank=True, null=True, help_text="Full JSON schema definition for complex object types")
 
     def __str__(self):
         return self.name
+    
+    def get_schema_definition(self):
+        """Get schema definition as dict, or None if not set"""
+        if self.schema_definition:
+            try:
+                return json.loads(self.schema_definition)
+            except json.JSONDecodeError:
+                return None
+        return None
+    
+    def set_schema_definition(self, schema_dict):
+        """Set schema definition from dict"""
+        if schema_dict:
+            self.schema_definition = json.dumps(schema_dict)
+        else:
+            self.schema_definition = None
 
 
 class Service(models.Model):
@@ -141,6 +159,9 @@ class Service(models.Model):
     asyncapi_version = models.CharField(max_length=20, default="3.0.0")  # Updated to 3.0.0
     version = models.CharField(max_length=20, default="1.0.0")
     description = models.TextField(max_length=1000, default='Service description')
+    original_title = models.CharField(max_length=500, blank=True, null=True, help_text="Original title from AsyncAPI YAML info section")
+    x_general_name = models.CharField(max_length=200, blank=True, null=True, help_text="x-general-name from AsyncAPI YAML")
+    x_service_name = models.CharField(max_length=200, blank=True, null=True, help_text="x-service-name from AsyncAPI YAML (kebab-case)")
     consumes = models.ManyToManyField("Event", related_name="event_consumers", blank=True)
     publishes = models.ManyToManyField("Event", related_name="event_publishers", blank=True)
     database_payloads = models.ManyToManyField("DatabasePayload", related_name="service_payloads", blank=True)
