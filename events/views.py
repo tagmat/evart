@@ -4,7 +4,7 @@ import json
 import logging
 from django.contrib.admin.views.decorators import staff_member_required
 from django.db.models import Q
-from django.db.utils import OperationalError
+from django.db.utils import OperationalError, IntegrityError
 from django.shortcuts import HttpResponse, render, redirect
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -1556,10 +1556,19 @@ def import_yaml(request):
                     event.endpoint = endpoint
                     event.save()
                 
-                if action == 'receive':
-                    service.consumes.add(event)
-                elif action == 'send':
-                    service.publishes.add(event)
+                try:
+                    if action == 'receive':
+                        # Check if already exists to avoid duplicate key errors
+                        if not service.consumes.filter(id=event.id).exists():
+                            service.consumes.add(event)
+                    elif action == 'send':
+                        # Check if already exists to avoid duplicate key errors
+                        if not service.publishes.filter(id=event.id).exists():
+                            service.publishes.add(event)
+                except (OperationalError, IntegrityError, Exception) as m2m_error:
+                    # Log but continue - don't let ManyToMany errors block the import
+                    logger.warning(f"Failed to add event {event.name} to service {service.name} ({action}): {str(m2m_error)}")
+                    continue
         
         # Ensure all Response channels are linked to service
         # This is a safety net to catch any Response events that weren't linked via operations
@@ -1571,8 +1580,13 @@ def import_yaml(request):
                     event = Event.objects.get(domain=domain, name=event_snake_name)
                     # Response channels are typically published (sent) by the service
                     # Check if already linked to avoid unnecessary database calls
-                    if not service.publishes.filter(id=event.id).exists() and not service.consumes.filter(id=event.id).exists():
-                        service.publishes.add(event)
+                    try:
+                        if not service.publishes.filter(id=event.id).exists() and not service.consumes.filter(id=event.id).exists():
+                            service.publishes.add(event)
+                    except Exception as m2m_error:
+                        # Log but continue - don't let ManyToMany errors block the import
+                        logger.warning(f"Failed to add response event {event.name} to service {service.name}: {str(m2m_error)}")
+                        pass
                 except Event.DoesNotExist:
                     # Event doesn't exist, skip
                     pass
@@ -1793,9 +1807,11 @@ def import_yaml(request):
                     
                     # Add to service (only if column exists)
                     try:
-                        service.database_payloads.add(db_payload)
-                    except OperationalError:
-                        # Skip if service_id column doesn't exist
+                        if not service.database_payloads.filter(id=db_payload.id).exists():
+                            service.database_payloads.add(db_payload)
+                    except (OperationalError, IntegrityError) as db_error:
+                        # Skip if service_id column doesn't exist or if there's an integrity error
+                        logger.warning(f"Failed to add database payload {db_payload.name} to service {service.name}: {str(db_error)}")
                         pass
                 except OperationalError as db_error:
                     # If service_id column doesn't exist, skip DatabasePayload creation

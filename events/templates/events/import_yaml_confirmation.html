@@ -710,11 +710,22 @@
                     }
                 })
                 .then(response => {
-                    if (response.ok) {
-                        return response.json();
-                    } else {
-                        throw new Error('Import failed');
-                    }
+                    // Always try to parse JSON, even if response is not OK
+                    return response.json().then(data => {
+                        if (!response.ok) {
+                            // If response is not OK, throw an error with the JSON data
+                            throw { isJsonError: true, data: data, status: response.status };
+                        }
+                        return data;
+                    }).catch(err => {
+                        // If JSON parsing fails, try to get text
+                        if (err.isJsonError) {
+                            throw err;
+                        }
+                        return response.text().then(text => {
+                            throw { isJsonError: false, message: text || 'Import failed', status: response.status };
+                        });
+                    });
                 })
                 .then(data => {
                     document.getElementById('loading').style.display = 'none';
@@ -725,7 +736,9 @@
                             window.location.href = '/admin/';
                         }, 2000);
                     } else {
-                        showMessage(data.error || 'Import failed', 'error');
+                        // Show detailed error message
+                        const errorMsg = data.error || data.error_details || data.error_type || 'Import failed';
+                        showMessage(errorMsg, 'error');
                         document.querySelector('.confirm-btn').disabled = false;
                         document.querySelector('.cancel-btn').disabled = false;
                         document.querySelector('.back-btn').disabled = false;
@@ -733,7 +746,21 @@
                 })
                 .catch(error => {
                     document.getElementById('loading').style.display = 'none';
-                    showMessage('Import failed: ' + error.message, 'error');
+                    
+                    // Extract error message from different error formats
+                    let errorMessage = 'Import failed';
+                    
+                    if (error.isJsonError && error.data) {
+                        // Error from JSON response
+                        errorMessage = error.data.error || error.data.error_details || error.data.error_type || 'Import failed';
+                    } else if (error.message) {
+                        // Error from exception
+                        errorMessage = error.message;
+                    } else if (typeof error === 'string') {
+                        errorMessage = error;
+                    }
+                    
+                    showMessage(errorMessage, 'error');
                     document.querySelector('.confirm-btn').disabled = false;
                     document.querySelector('.cancel-btn').disabled = false;
                     document.querySelector('.back-btn').disabled = false;
