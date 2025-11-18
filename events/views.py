@@ -179,6 +179,69 @@ def _get_fallback_field_type(project):
             return None
 
 
+def _safe_get_or_create(model_class, created_list=None, **kwargs):
+    """Safely get or create a model instance with proper transaction and connection handling"""
+    defaults = kwargs.pop('defaults', {})
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            # Close any stale connections before attempting operation
+            connection.close_if_unusable_or_obsolete()
+            
+            # Build lookup kwargs (everything except defaults)
+            lookup_kwargs = kwargs.copy()
+            
+            # Try to get existing first
+            try:
+                instance = model_class.objects.get(**lookup_kwargs)
+                return instance, False
+            except model_class.DoesNotExist:
+                # Doesn't exist, try to create it in a separate transaction
+                try:
+                    with transaction.atomic():
+                        create_kwargs = lookup_kwargs.copy()
+                        create_kwargs.update(defaults)
+                        instance = model_class.objects.create(**create_kwargs)
+                        if created_list is not None:
+                            created_list.append(instance)
+                        return instance, True
+                except (IntegrityError, OperationalError) as db_error:
+                    # If creation fails due to constraint, try to get it again
+                    # (might have been created by another process or concurrent request)
+                    if attempt < max_retries - 1:
+                        # Reset connection and retry
+                        connection.close()
+                        continue
+                    else:
+                        # Last attempt - try to get it one more time
+                        try:
+                            return model_class.objects.get(**lookup_kwargs), False
+                        except model_class.DoesNotExist:
+                            logger.error(f"{model_class.__name__} does not exist and cannot be created after {max_retries} attempts: {str(db_error)}")
+                            raise
+                except (DatabaseError, Exception) as db_error:
+                    # For other database errors, reset connection and retry
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Database error creating {model_class.__name__} (attempt {attempt + 1}): {str(db_error)}")
+                        connection.close()
+                        continue
+                    else:
+                        logger.error(f"Failed to create {model_class.__name__} after {max_retries} attempts: {str(db_error)}")
+                        raise
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Unexpected error creating {model_class.__name__} (attempt {attempt + 1}): {str(e)}")
+                connection.close()
+                continue
+            else:
+                logger.error(f"Failed to create {model_class.__name__} after {max_retries} attempts: {str(e)}")
+                raise
+    
+    # Should never reach here, but just in case
+    raise Exception(f"Failed to create {model_class.__name__} after {max_retries} attempts")
+
+
 def find_matching_payload(project, payload_name, schema_data, schemas):
     """Find existing payload that matches the schema data exactly"""
     # Get the data schema for this payload
@@ -1473,27 +1536,38 @@ def import_yaml(request):
         
         # Create or get project
         project_slug = re.sub(r'[^a-zA-Z0-9]', '', project_name.lower())[:20]
-        project, created = Project.objects.get_or_create(
-            slug_name=project_slug,
-            defaults={'name': project_name}
-        )
+        try:
+            project, created = _safe_get_or_create(
+                Project,
+                slug_name=project_slug,
+                defaults={'name': project_name}
+            )
+        except Exception as e:
+            logger.error(f"Failed to create/get Project: {str(e)}")
+            raise
         
         # Create or get service
         service_slug = re.sub(r'[^a-zA-Z0-9]', '', service_name.lower())[:200]
         original_title = info.get('title', '')
-        service, created = Service.objects.get_or_create(
-            project=project,
-            slug_name=service_slug,
-            defaults={
-                'name': service_name,
-                'asyncapi_version': yaml_data.get('asyncapi', '3.0.0'),
-                'version': info.get('version', '1.0.0'),
-                'description': info.get('description', 'Imported service'),
-                'original_title': original_title,
-                'x_general_name': info.get('x-general-name', ''),
-                'x_service_name': info.get('x-service-name', '')
-            }
-        )
+        try:
+            service, created = _safe_get_or_create(
+                Service,
+                created_list=created_services,
+                project=project,
+                slug_name=service_slug,
+                defaults={
+                    'name': service_name,
+                    'asyncapi_version': yaml_data.get('asyncapi', '3.0.0'),
+                    'version': info.get('version', '1.0.0'),
+                    'description': info.get('description', 'Imported service'),
+                    'original_title': original_title,
+                    'x_general_name': info.get('x-general-name', ''),
+                    'x_service_name': info.get('x-service-name', '')
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to create/get Service: {str(e)}")
+            raise
         # Update metadata even if service already exists
         if not created:
             service.x_general_name = info.get('x-general-name', '') or service.x_general_name
@@ -1502,13 +1576,25 @@ def import_yaml(request):
             service.save()
         
         # Create domain
-        domain, created = Domain.objects.get_or_create(
-            project=project,
-            name='default'
-        )
+        try:
+            domain, created = _safe_get_or_create(
+                Domain,
+                project=project,
+                name='default'
+            )
+        except Exception as e:
+            logger.error(f"Failed to create/get Domain: {str(e)}")
+            raise
         
         # Create event type
-        event_type, created = EventType.objects.get_or_create(name='event')
+        try:
+            event_type, created = _safe_get_or_create(
+                EventType,
+                name='event'
+            )
+        except Exception as e:
+            logger.error(f"Failed to create/get EventType: {str(e)}")
+            raise
         
         # Process channels and create events
         channels = yaml_data.get('channels', {})
@@ -1547,16 +1633,20 @@ def import_yaml(request):
                                 payload = matching_payload
                             else:
                                 # Create new payload
-                                payload, created = Payload.objects.get_or_create(
-                                    project=project,
-                                    name=payload_name,
-                                    defaults={
-                                        'name': payload_name,
-                                        'description': schemas.get(f'Data_{payload_name}Payload', {}).get('description', '')
-                                    }
-                                )
-                                if created:
-                                    created_payloads.append(payload)
+                                try:
+                                    payload, created = _safe_get_or_create(
+                                        Payload,
+                                        created_list=created_payloads,
+                                        project=project,
+                                        name=payload_name,
+                                        defaults={
+                                            'name': payload_name,
+                                            'description': schemas.get(f'Data_{payload_name}Payload', {}).get('description', '')
+                                        }
+                                    )
+                                except Exception as payload_error:
+                                    logger.warning(f"Failed to create Payload {payload_name}: {str(payload_error)}")
+                                    continue
                             
                             # Assign to request or response based on message name
                             if message_name.endswith('Response'):
@@ -1599,21 +1689,27 @@ def import_yaml(request):
                                         request_payload = payload
             
             # Create event
-            event, created = Event.objects.get_or_create(
-                domain=domain,
-                name=event_snake_name,
-                defaults={
-                    'type': event_type,
-                    'payload': request_payload,
-                    'response_payload': response_payload,
-                    'is_sync': channel_data.get('x-is-sync', True),
-                    'is_post': channel_data.get('x-is-post', False),
-                    'address': channel_data.get('address'),
-                    'endpoint': f"/{channel_name}",
-                    'description': channel_data.get('description', ''),
-                    'summary': channel_data.get('summary', '')
-                }
-            )
+            try:
+                event, created = _safe_get_or_create(
+                    Event,
+                    created_list=created_events,
+                    domain=domain,
+                    name=event_snake_name,
+                    defaults={
+                        'type': event_type,
+                        'payload': request_payload,
+                        'response_payload': response_payload,
+                        'is_sync': channel_data.get('x-is-sync', True),
+                        'is_post': channel_data.get('x-is-post', False),
+                        'address': channel_data.get('address'),
+                        'endpoint': f"/{channel_name}",
+                        'description': channel_data.get('description', ''),
+                        'summary': channel_data.get('summary', '')
+                    }
+                )
+            except Exception as event_error:
+                logger.warning(f"Failed to create Event {event_snake_name}: {str(event_error)}")
+                continue
             
             # Update existing event with new data if not created
             if not created:
@@ -1727,16 +1823,20 @@ def import_yaml(request):
                     if payload_schema_name in schemas and payload_name not in linked_payload_names:
                         # This is a standalone payload - create it
                         payload_schema_data = schemas[payload_schema_name]
-                        payload, created = Payload.objects.get_or_create(
-                            project=project,
-                            name=payload_name,
-                            defaults={
-                                'name': payload_name,
-                                'description': payload_schema_data.get('description', '')
-                            }
-                        )
-                        if created:
-                            created_payloads.append(payload)
+                        try:
+                            payload, created = _safe_get_or_create(
+                                Payload,
+                                created_list=created_payloads,
+                                project=project,
+                                name=payload_name,
+                                defaults={
+                                    'name': payload_name,
+                                    'description': payload_schema_data.get('description', '')
+                                }
+                            )
+                        except Exception as payload_error:
+                            logger.warning(f"Failed to create Payload {payload_name}: {str(payload_error)}")
+                            continue
                     else:
                         # Not a standalone payload or already linked, skip
                         continue
@@ -1774,22 +1874,26 @@ def import_yaml(request):
                             schema_ref = field_data['$ref']
                         
                         # Create field with all attributes
-                        field, created = Field.objects.get_or_create(
-                            payload=payload,
-                            name=field_name,
-                            defaults={
-                                'type': field_type,
-                                'required': field_name in required_fields,
-                                'description': field_data.get('description', ''),
-                                'minimum': field_data.get('minimum'),
-                                'maximum': field_data.get('maximum'),
-                                'array_items_type': array_items_type,
-                                'array_items_ref': array_items_ref,
-                                'schema_ref': schema_ref
-                            }
-                        )
-                        if created:
-                            created_fields.append(field)
+                        try:
+                            field, created = _safe_get_or_create(
+                                Field,
+                                created_list=created_fields,
+                                payload=payload,
+                                name=field_name,
+                                defaults={
+                                    'type': field_type,
+                                    'required': field_name in required_fields,
+                                    'description': field_data.get('description', ''),
+                                    'minimum': field_data.get('minimum'),
+                                    'maximum': field_data.get('maximum'),
+                                    'array_items_type': array_items_type,
+                                    'array_items_ref': array_items_ref,
+                                    'schema_ref': schema_ref
+                                }
+                            )
+                        except Exception as field_create_error:
+                            logger.warning(f"Failed to create Field {field_name} for payload {payload_name}: {str(field_create_error)}")
+                            continue
                     except Exception as field_error:
                         # Log but continue - don't let individual field errors block the import
                         logger.warning(f"Failed to create Field {field_name} for payload {payload_name}: {str(field_error)}")
@@ -1839,22 +1943,26 @@ def import_yaml(request):
                                     schema_ref = field_data['$ref']
                                 
                                 # Create field
-                                field, created = Field.objects.get_or_create(
-                                    payload=payload,
-                                    name=field_name,
-                                    defaults={
-                                        'type': field_type,
-                                        'required': field_name in inline_required_fields,
-                                        'description': field_data.get('description', ''),
-                                        'minimum': field_data.get('minimum'),
-                                        'maximum': field_data.get('maximum'),
-                                        'array_items_type': array_items_type,
-                                        'array_items_ref': array_items_ref,
-                                        'schema_ref': schema_ref
-                                    }
-                                )
-                                if created:
-                                    created_fields.append(field)
+                                try:
+                                    field, created = _safe_get_or_create(
+                                        Field,
+                                        created_list=created_fields,
+                                        payload=payload,
+                                        name=field_name,
+                                        defaults={
+                                            'type': field_type,
+                                            'required': field_name in inline_required_fields,
+                                            'description': field_data.get('description', ''),
+                                            'minimum': field_data.get('minimum'),
+                                            'maximum': field_data.get('maximum'),
+                                            'array_items_type': array_items_type,
+                                            'array_items_ref': array_items_ref,
+                                            'schema_ref': schema_ref
+                                        }
+                                    )
+                                except Exception as field_create_error:
+                                    logger.warning(f"Failed to create Field {field_name} for inline payload: {str(field_create_error)}")
+                                    continue
                             except Exception as field_error:
                                 # Log but continue - don't let individual field errors block the import
                                 logger.warning(f"Failed to create Field {field_name} for inline payload {payload_name}: {str(field_error)}")
@@ -1869,20 +1977,25 @@ def import_yaml(request):
                 # Wrap in try/except to prevent blocking FieldType/Field creation if service_id column doesn't exist
                 try:
                     db_payload_name = schema_name.replace('DB_', '')
-                    db_payload, created = DatabasePayload.objects.get_or_create(
-                        project=project,
-                        service=service,
-                        name=db_payload_name,
-                        defaults={
-                            'name': db_payload_name,
-                            'service': service,
-                            'create_rest': schema_data.get('x-create-rest', False),
-                            'x_parser_schema_id': schema_data.get('x-parser-schema-id'),
-                            'x_derives_from': schema_data.get('x-derives-from')
-                        }
-                    )
-                    if created:
-                        created_db_payloads.append(db_payload)
+                    try:
+                        db_payload, created = _safe_get_or_create(
+                            DatabasePayload,
+                            created_list=created_db_payloads,
+                            project=project,
+                            service=service,
+                            name=db_payload_name,
+                            defaults={
+                                'name': db_payload_name,
+                                'service': service,
+                                'create_rest': schema_data.get('x-create-rest', False),
+                                'x_parser_schema_id': schema_data.get('x-parser-schema-id'),
+                                'x_derives_from': schema_data.get('x-derives-from')
+                            }
+                        )
+                    except Exception as db_payload_error:
+                        logger.warning(f"Failed to create DatabasePayload {db_payload_name}: {str(db_payload_error)}")
+                        # Continue with FieldType creation even if DatabasePayload fails
+                        continue
                     
                     # Process properties
                     properties = schema_data.get('properties', {})
@@ -1900,24 +2013,28 @@ def import_yaml(request):
                                 continue
                             
                             # Create database field with all attributes
-                            db_field, created = DatabaseField.objects.get_or_create(
-                                payload=db_payload,
-                                name=field_name,
-                                defaults={
-                                    'type': field_type,
-                                    'required': field_name in required_fields,
-                                    'description': field_data.get('description', ''),
-                                    'minimum': field_data.get('minimum'),
-                                    'maximum': field_data.get('maximum'),
-                                    'x_type': field_data.get('x-type'),
-                                    'x_unique': field_data.get('x-unique', False),
-                                    'x_index': field_data.get('x-index', False),
-                                    'default_value': field_data.get('default'),
-                                    'x_relation_schema_id': field_data.get('x-relation-schema-id')
-                                }
-                            )
-                            if created:
-                                created_db_fields.append(db_field)
+                            try:
+                                db_field, created = _safe_get_or_create(
+                                    DatabaseField,
+                                    created_list=created_db_fields,
+                                    payload=db_payload,
+                                    name=field_name,
+                                    defaults={
+                                        'type': field_type,
+                                        'required': field_name in required_fields,
+                                        'description': field_data.get('description', ''),
+                                        'minimum': field_data.get('minimum'),
+                                        'maximum': field_data.get('maximum'),
+                                        'x_type': field_data.get('x-type'),
+                                        'x_unique': field_data.get('x-unique', False),
+                                        'x_index': field_data.get('x-index', False),
+                                        'default_value': field_data.get('default'),
+                                        'x_relation_schema_id': field_data.get('x-relation-schema-id')
+                                    }
+                                )
+                            except Exception as db_field_error:
+                                logger.warning(f"Failed to create DatabaseField {field_name} for {db_payload_name}: {str(db_field_error)}")
+                                continue
                         except Exception as field_error:
                             # Log but continue - don't let individual field errors block the import
                             logger.warning(f"Failed to create DatabaseField {field_name} for {db_payload_name}: {str(field_error)}")
@@ -1964,16 +2081,20 @@ def import_yaml(request):
                 if payload_name not in linked_payload_names:
                     # This is a standalone payload not linked to any channel/operation
                     # Import it as a standalone payload
-                    payload, created = Payload.objects.get_or_create(
-                        project=project,
-                        name=payload_name,
-                        defaults={
-                            'name': payload_name,
-                            'description': schema_data.get('description', '')
-                        }
-                    )
-                    if created:
-                        created_payloads.append(payload)
+                    try:
+                        payload, created = _safe_get_or_create(
+                            Payload,
+                            created_list=created_payloads,
+                            project=project,
+                            name=payload_name,
+                            defaults={
+                                'name': payload_name,
+                                'description': schema_data.get('description', '')
+                            }
+                        )
+                    except Exception as payload_error:
+                        logger.warning(f"Failed to create Payload {payload_name}: {str(payload_error)}")
+                        continue
                     
                     # Check if payload has inline data object or Data_* schema
                     payload_properties = schema_data.get('properties', {})
@@ -2061,22 +2182,26 @@ def import_yaml(request):
                                     schema_ref = field_data['$ref']
                                 
                                 # Create field with all attributes
-                                field, created = Field.objects.get_or_create(
-                                    payload=payload,
-                                    name=field_name,
-                                    defaults={
-                                        'type': field_type,
-                                        'required': field_name in required_fields,
-                                        'description': field_data.get('description', ''),
-                                        'minimum': field_data.get('minimum'),
-                                        'maximum': field_data.get('maximum'),
-                                        'array_items_type': array_items_type,
-                                        'array_items_ref': array_items_ref,
-                                        'schema_ref': schema_ref
-                                    }
-                                )
-                                if created:
-                                    created_fields.append(field)
+                                try:
+                                    field, created = _safe_get_or_create(
+                                        Field,
+                                        created_list=created_fields,
+                                        payload=payload,
+                                        name=field_name,
+                                        defaults={
+                                            'type': field_type,
+                                            'required': field_name in required_fields,
+                                            'description': field_data.get('description', ''),
+                                            'minimum': field_data.get('minimum'),
+                                            'maximum': field_data.get('maximum'),
+                                            'array_items_type': array_items_type,
+                                            'array_items_ref': array_items_ref,
+                                            'schema_ref': schema_ref
+                                        }
+                                    )
+                                except Exception as field_create_error:
+                                    logger.warning(f"Failed to create Field {field_name} for payload: {str(field_create_error)}")
+                                    continue
                             except Exception as field_error:
                                 # Log but continue - don't let individual field errors block the import
                                 import logging
@@ -2091,7 +2216,9 @@ def import_yaml(request):
                 if 'enum' in schema_data:
                     # This is an enum type
                     try:
-                        field_type, created = FieldType.objects.get_or_create(
+                        field_type, created = _safe_get_or_create(
+                            FieldType,
+                            created_list=created_field_types,
                             project=project,
                             name=schema_name,
                             defaults={
@@ -2101,9 +2228,7 @@ def import_yaml(request):
                                 'format': schema_data.get('format'),
                                 'max_length': schema_data.get('maxLength')
                             }
-                        ) 
-                        if created:
-                            created_field_types.append(field_type)
+                        )
                     except Exception as ft_error:
                         logger.warning(f"Failed to create FieldType {schema_name}: {str(ft_error)}")
                 
@@ -2116,7 +2241,9 @@ def import_yaml(request):
                             # Store full schema definition for complex objects
                             schema_def = json.dumps(schema_data)
                         
-                        field_type, created = FieldType.objects.get_or_create(
+                        field_type, created = _safe_get_or_create(
+                            FieldType,
+                            created_list=created_field_types,
                             project=project,
                             name=schema_name,   
                             defaults={
@@ -2127,8 +2254,6 @@ def import_yaml(request):
                                 'schema_definition': schema_def
                             }
                         )
-                        if created:
-                            created_field_types.append(field_type)
                         # Update schema definition if it exists and wasn't set
                         if not created and schema_data.get('type') == 'object' and 'properties' in schema_data and not field_type.schema_definition:
                             field_type.schema_definition = json.dumps(schema_data)
