@@ -87,14 +87,16 @@ class Command(BaseCommand):
             for table in DatabaseTables.objects.all():
                 table.fields.clear()
             
-            # Delete models in reverse dependency order
+            # Delete models in reverse dependency order to avoid foreign key constraints
+            # DatabasePayload must be deleted before Service (due to ForeignKey)
+            # DatabaseField must be deleted before DatabasePayload (due to ForeignKey)
             models_to_clear = [
                 ('Events', Event),
+                ('Database Fields', DatabaseField),  # Must come before DatabasePayload
+                ('Database Payloads', DatabasePayload),  # Must come before Service
                 ('Services', Service),
                 ('Database Tables', DatabaseTables),
-                ('Database Fields', DatabaseField),
                 ('Fields', Field),
-                ('Database Payloads', DatabasePayload),
                 ('Payloads', Payload),
                 ('Domains', Domain),
                 ('Field Types', FieldType),

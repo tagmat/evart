@@ -459,7 +459,7 @@ def generate_full_yaml(request, service_id):
     # This matches the original YAML format where standalone payloads like GetVariablesAckPayload
     # exist as schemas but don't have corresponding messages
 
-    for dbpayload in DatabasePayload.objects.all():
+    for dbpayload in DatabasePayload.objects.filter(service=service):
         properties = {}
 
         for field in dbpayload.databasefield_set.all():
@@ -769,6 +769,7 @@ def parse_yaml_for_preview(yaml_content):
         existing_data['db_payloads'].append({
             'name': db_payload.name,
             'project_name': db_payload.project.name,
+            'service_name': db_payload.service.name if hasattr(db_payload, 'service') else None,
             'create_rest': db_payload.create_rest,
             'x_parser_schema_id': db_payload.x_parser_schema_id,
             'x_derives_from': db_payload.x_derives_from,
@@ -1102,11 +1103,38 @@ def parse_yaml_for_preview(yaml_content):
             db_payload_preview = {
                 'name': db_payload_name,
                 'project_name': project_name,
+                'service_name': service_name,
                 'create_rest': schema_data.get('x-create-rest', False),
                 'x_parser_schema_id': schema_data.get('x-parser-schema-id'),
                 'x_derives_from': schema_data.get('x-derives-from'),
-                'fields': []
+                'fields': [],
+                'is_existing': False,
+                'existing_match': None,
+                'is_conflict': False,
+                'conflict_match': None,
+                'conflict_reason': None
             }
+            
+            # Check for exact match or conflict in existing database payloads
+            # Match by service name and payload name
+            for existing_db_payload in existing_data['db_payloads']:
+                if existing_db_payload['name'] == db_payload_name and existing_db_payload.get('service_name') == service_name:
+                    conflicts = []
+                    if existing_db_payload.get('create_rest') != db_payload_preview['create_rest']:
+                        conflicts.append(f"create_rest: existing={existing_db_payload.get('create_rest')}, new={db_payload_preview['create_rest']}")
+                    if existing_db_payload.get('x_parser_schema_id') != db_payload_preview['x_parser_schema_id']:
+                        conflicts.append(f"x_parser_schema_id: existing='{existing_db_payload.get('x_parser_schema_id')}', new='{db_payload_preview['x_parser_schema_id']}'")
+                    if existing_db_payload.get('x_derives_from') != db_payload_preview['x_derives_from']:
+                        conflicts.append(f"x_derives_from: existing='{existing_db_payload.get('x_derives_from')}', new='{db_payload_preview['x_derives_from']}'")
+                    
+                    if not conflicts:
+                        db_payload_preview['is_existing'] = True
+                        db_payload_preview['existing_match'] = existing_db_payload
+                    else:
+                        db_payload_preview['is_conflict'] = True
+                        db_payload_preview['conflict_match'] = existing_db_payload
+                        db_payload_preview['conflict_reason'] = "; ".join(conflicts)
+                    break
             
             # Process properties
             properties = schema_data.get('properties', {})
@@ -1686,9 +1714,11 @@ def import_yaml(request):
                 db_payload_name = schema_name.replace('DB_', '')
                 db_payload, created = DatabasePayload.objects.get_or_create(
                     project=project,
+                    service=service,
                     name=db_payload_name,
                     defaults={
                         'name': db_payload_name,
+                        'service': service,
                         'create_rest': schema_data.get('x-create-rest', False),
                         'x_parser_schema_id': schema_data.get('x-parser-schema-id'),
                         'x_derives_from': schema_data.get('x-derives-from')

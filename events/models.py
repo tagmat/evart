@@ -2,6 +2,7 @@ import re
 import json
 
 from django.db import models
+from django.db.utils import OperationalError
 from django.core.exceptions import ValidationError
 
 
@@ -73,6 +74,7 @@ class Payload(models.Model):
 
 class DatabasePayload(models.Model):
     project = models.ForeignKey("Project", on_delete=models.CASCADE)
+    service = models.ForeignKey("Service", on_delete=models.CASCADE, help_text="Service that owns this database object")
     name = models.CharField(max_length=200)
     create_rest = models.BooleanField(default=False)
     
@@ -80,8 +82,21 @@ class DatabasePayload(models.Model):
     x_parser_schema_id = models.CharField(max_length=200, blank=True, null=True, help_text="Parser schema ID")
     x_derives_from = models.CharField(max_length=200, blank=True, null=True, help_text="Schema this derives from")
 
+    class Meta:
+        unique_together = [['service', 'name']]
+
     def __str__(self):
-        return self.name
+        try:
+            # Check if service_id column exists by trying to access service
+            if hasattr(self, 'service_id') and self.service_id:
+                return f"{self.service.name}/{self.name}"
+            elif hasattr(self, 'service') and self.service:
+                return f"{self.service.name}/{self.name}"
+            else:
+                return self.name
+        except (AttributeError, OperationalError):
+            # Fallback if service column doesn't exist (migration not run)
+            return self.name
 
 
 class Field(models.Model):
