@@ -26,17 +26,28 @@ def create_or_get_field_type(project, field_data, created_field_types):
             enum_choices = ','.join(field_data.get('enum', []))
             # Create a unique name for enum types
             enum_type_name = f"{field_type_name}_enum_{hash(enum_choices) % 10000}"
-            field_type, created = FieldType.objects.get_or_create(
-                project=project,
-                name=enum_type_name,
-                defaults={
-                    'type': 'string',
-                    'custom_type': True,
-                    'enum_choices': enum_choices,
-                    'format': field_data.get('format'),
-                    'max_length': field_data.get('maxLength')
-                }
-            )
+            try:
+                field_type, created = FieldType.objects.get_or_create(
+                    project=project,
+                    name=enum_type_name,
+                    defaults={
+                        'type': 'string',
+                        'custom_type': True,
+                        'enum_choices': enum_choices,
+                        'format': field_data.get('format'),
+                        'max_length': field_data.get('maxLength')
+                    }
+                )
+            except (IntegrityError, OperationalError) as db_error:
+                # If creation fails due to constraint or DB error, try to get existing one
+                logger.warning(f"Failed to create FieldType {enum_type_name}, trying to get existing: {str(db_error)}")
+                try:
+                    field_type = FieldType.objects.get(project=project, name=enum_type_name)
+                    created = False
+                except FieldType.DoesNotExist:
+                    # If it doesn't exist and we can't create it, use fallback
+                    logger.error(f"FieldType {enum_type_name} does not exist and cannot be created: {str(db_error)}")
+                    return _get_fallback_field_type(project)
         else:
             # Handle regular field types - create unique types for different formats
             format_value = field_data.get('format')
@@ -46,16 +57,27 @@ def create_or_get_field_type(project, field_data, created_field_types):
             else:
                 field_type_name_with_format = field_type_name
                 
-            field_type, created = FieldType.objects.get_or_create(
-                project=project,
-                name=field_type_name_with_format,
-                defaults={
-                    'type': field_type_name,
-                    'custom_type': False,
-                    'format': format_value,
-                    'max_length': field_data.get('maxLength')
-                }
-            )
+            try:
+                field_type, created = FieldType.objects.get_or_create(
+                    project=project,
+                    name=field_type_name_with_format,
+                    defaults={
+                        'type': field_type_name,
+                        'custom_type': False,
+                        'format': format_value,
+                        'max_length': field_data.get('maxLength')
+                    }
+                )
+            except (IntegrityError, OperationalError) as db_error:
+                # If creation fails due to constraint or DB error, try to get existing one
+                logger.warning(f"Failed to create FieldType {field_type_name_with_format}, trying to get existing: {str(db_error)}")
+                try:
+                    field_type = FieldType.objects.get(project=project, name=field_type_name_with_format)
+                    created = False
+                except FieldType.DoesNotExist:
+                    # If it doesn't exist and we can't create it, use fallback
+                    logger.error(f"FieldType {field_type_name_with_format} does not exist and cannot be created: {str(db_error)}")
+                    return _get_fallback_field_type(project)
         
         if created:
             created_field_types.append(field_type)
@@ -64,7 +86,12 @@ def create_or_get_field_type(project, field_data, created_field_types):
     except Exception as e:
         # Log error but return a default field type to prevent blocking the import
         logger.error(f"Failed to create/get FieldType: {str(e)}")
-        # Return a default string field type as fallback
+        return _get_fallback_field_type(project)
+
+
+def _get_fallback_field_type(project):
+    """Get or create a default string field type as fallback"""
+    try:
         field_type, _ = FieldType.objects.get_or_create(
             project=project,
             name='string',
@@ -74,6 +101,17 @@ def create_or_get_field_type(project, field_data, created_field_types):
             }
         )
         return field_type
+    except Exception as fallback_error:
+        # Even fallback failed, try to get any existing string type
+        logger.error(f"Fallback FieldType creation also failed: {str(fallback_error)}")
+        try:
+            return FieldType.objects.filter(project=project, name='string').first() or \
+                   FieldType.objects.filter(project=project, type='string').first() or \
+                   FieldType.objects.filter(project=project).first()
+        except Exception:
+            # Last resort - return None and let the caller handle it
+            logger.critical("Could not get any FieldType, even as fallback")
+            return None
 
 
 def find_matching_payload(project, payload_name, schema_data, schemas):
@@ -1647,6 +1685,11 @@ def import_yaml(request):
                         # Create or get field type with comprehensive handling
                         field_type = create_or_get_field_type(project, field_data, created_field_types)
                         
+                        # Skip if field_type is None (fallback failed)
+                        if field_type is None:
+                            logger.warning(f"Skipping Field {field_name} for payload: no valid FieldType available")
+                            continue
+                        
                         # Handle array items and schema references
                         array_items_type = None
                         array_items_ref = None
@@ -1708,6 +1751,11 @@ def import_yaml(request):
                             try:
                                 # Create or get field type
                                 field_type = create_or_get_field_type(project, field_data, created_field_types)
+                                
+                                # Skip if field_type is None (fallback failed)
+                                if field_type is None:
+                                    logger.warning(f"Skipping Field {field_name} for inline payload: no valid FieldType available")
+                                    continue
                                 
                                 # Handle array items and schema references
                                 array_items_type = None
@@ -1780,6 +1828,11 @@ def import_yaml(request):
                             # Create or get field type with comprehensive handling
                             # This should work independently of DatabasePayload
                             field_type = create_or_get_field_type(project, field_data, created_field_types)
+                            
+                            # Skip if field_type is None (fallback failed)
+                            if field_type is None:
+                                logger.warning(f"Skipping DatabaseField {field_name} for {db_payload_name}: no valid FieldType available")
+                                continue
                             
                             # Create database field with all attributes
                             db_field, created = DatabaseField.objects.get_or_create(
@@ -1870,6 +1923,11 @@ def import_yaml(request):
                         for field_name, field_data in inline_data_properties.items():
                             try:
                                 field_type = create_or_get_field_type(project, field_data, created_field_types)
+                                
+                                # Skip if field_type is None (fallback failed)
+                                if field_type is None:
+                                    logger.warning(f"Skipping Field {field_name} for inline payload: no valid FieldType available")
+                                    continue
                                 
                                 array_items_type = None
                                 array_items_ref = None
