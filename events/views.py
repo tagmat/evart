@@ -1555,6 +1555,20 @@ def import_yaml(request):
                 'error_type': error_type,
                 'error_details': error_details
             }, status=500)
+    except Exception as e:
+        # Catch any other unexpected errors
+        import traceback
+        error_type = type(e).__name__
+        error_details = str(e)
+        tb_str = traceback.format_exc()
+        logger.error(f"Unexpected error in import_yaml: {error_type}: {error_details}\n{tb_str}")
+        
+        return JsonResponse({
+            'success': False,
+            'error': f'Unexpected error: {error_details}',
+            'error_type': error_type,
+            'error_details': error_details
+        }, status=500)
 
 
 def _perform_import(yaml_data, request):
