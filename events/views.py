@@ -483,8 +483,19 @@ def generate_full_yaml(request, service_id):
                 }
 
 
-    # Create payload schemas
-    for payload in Payload.objects.all():
+    # Collect all payloads used by this service's events
+    service_payloads = set()
+    for event in service.consumes.all().union(service.publishes.all()):
+        if event.payload:
+            service_payloads.add(event.payload)
+        if event.response_payload:
+            service_payloads.add(event.response_payload)
+    
+    # Also collect payloads from database payloads (if any are referenced in schemas)
+    # Database payloads are already filtered by service, so we don't need to add them here
+    
+    # Create payload schemas - only for payloads used by this service
+    for payload in service_payloads:
         # First, collect data properties to determine if Data_* schema will be empty
         data_schema_name = "Data_{0}Payload".format(payload.name)
         data_properties = {}
@@ -714,13 +725,25 @@ def generate_full_yaml(request, service_id):
             
         configuration['components']['schemas']["{1}{0}".format(dbpayload.name, "DB_")] = schema_config
 
+    # Collect all FieldTypes used by this service's payloads
+    service_field_types = set()
+    for payload in service_payloads:
+        for field in payload.field_set.all():
+            service_field_types.add(field.type)
+    
+    # Also collect FieldTypes from database payloads
+    for dbpayload in DatabasePayload.objects.filter(service=service):
+        for field in dbpayload.databasefield_set.all():
+            service_field_types.add(field.type)
+    
     # Export complex object FieldType schemas (type='object', custom_type=True)
-    # These are standalone schemas like ChargingProfile, ChargingSchedule, etc.
-    for field_type in FieldType.objects.filter(project=service.project, type='object', custom_type=True):
-        schema_def = field_type.get_schema_definition()
-        if schema_def:
-            # Use the stored schema definition as-is (don't add x-parser-schema-id)
-            configuration['components']['schemas'][field_type.name] = schema_def.copy()
+    # Only export FieldTypes that are actually used by this service
+    for field_type in service_field_types:
+        if field_type.type == 'object' and field_type.custom_type:
+            schema_def = field_type.get_schema_definition()
+            if schema_def:
+                # Use the stored schema definition as-is (don't add x-parser-schema-id)
+                configuration['components']['schemas'][field_type.name] = schema_def.copy()
 
     # Custom YAML representer to force double quotes for strings
     class DoubleQuotedString(str):
