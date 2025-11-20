@@ -40,6 +40,11 @@ class EventAdmin(admin.ModelAdmin):
 
 class EventInline(admin.TabularInline):
     model = Event
+    extra = 0
+    show_change_link = True
+    # Limit the number of inline items shown to prevent too many fields
+    # Users can use "Show all" or pagination if needed
+    can_delete = True
 
 
 # class GrpcServiceInline(NestedTabularInline):
