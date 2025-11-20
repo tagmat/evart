@@ -79,12 +79,14 @@ def _safe_get_or_create_field_type(project, name, defaults, created_field_types)
                 return field_type
             except FieldType.DoesNotExist:
                 # Doesn't exist, try to create it
+                # Use a savepoint to ensure IntegrityError doesn't abort the outer transaction
                 try:
-                    field_type = FieldType.objects.create(
-                        project=project,
-                        name=name,
-                        **defaults
-                    )
+                    with transaction.atomic():
+                        field_type = FieldType.objects.create(
+                            project=project,
+                            name=name,
+                            **defaults
+                        )
                     created_field_types.append(field_type)
                     return field_type
                 except (IntegrityError, OperationalError) as db_error:
@@ -130,13 +132,15 @@ def _get_fallback_field_type(project):
             return FieldType.objects.get(project=project, name='string')
         except FieldType.DoesNotExist:
             # Doesn't exist, try to create it
+            # Use a savepoint to ensure IntegrityError doesn't abort the outer transaction
             try:
-                return FieldType.objects.create(
-                    project=project,
-                    name='string',
-                    type='string',
-                    custom_type=False
-                )
+                with transaction.atomic():
+                    return FieldType.objects.create(
+                        project=project,
+                        name='string',
+                        type='string',
+                        custom_type=False
+                    )
             except (IntegrityError, OperationalError):
                 # If creation fails, try to get it again
                 try:
@@ -186,11 +190,12 @@ def _safe_get_or_create(model_class, created_list=None, **kwargs):
                 return instance, False
             except model_class.DoesNotExist:
                 # Doesn't exist, try to create it
-                # The outer transaction will handle the commit
+                # Use a savepoint to ensure IntegrityError doesn't abort the outer transaction
                 try:
-                    create_kwargs = lookup_kwargs.copy()
-                    create_kwargs.update(defaults)
-                    instance = model_class.objects.create(**create_kwargs)
+                    with transaction.atomic():
+                        create_kwargs = lookup_kwargs.copy()
+                        create_kwargs.update(defaults)
+                        instance = model_class.objects.create(**create_kwargs)
                     if created_list is not None:
                         created_list.append(instance)
                     return instance, True
