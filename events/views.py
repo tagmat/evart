@@ -2,6 +2,7 @@ import yaml
 import re
 import json
 import logging
+import time
 from django.contrib.admin.views.decorators import staff_member_required
 from django.db.models import Q
 from django.db import transaction, connection
@@ -77,25 +78,30 @@ def _safe_get_or_create_field_type(project, name, defaults, created_field_types)
             
             # Try to get existing first
             try:
-                field_type = FieldType.objects.get(project=project, name=name)
+                # Use select_for_update in production to prevent race conditions
+                if connection.in_atomic_block and 'postgresql' in connection.vendor:
+                    field_type = FieldType.objects.select_for_update(nowait=True).get(project=project, name=name)
+                else:
+                    field_type = FieldType.objects.get(project=project, name=name)
                 return field_type
             except FieldType.DoesNotExist:
-                # Doesn't exist, try to create it in a separate transaction
+                # Doesn't exist, try to create it
+                # Don't use transaction.atomic() to avoid nested transaction issues in production
                 try:
-                    with transaction.atomic():
-                        field_type = FieldType.objects.create(
-                            project=project,
-                            name=name,
-                            **defaults
-                        )
-                        created_field_types.append(field_type)
-                        return field_type
+                    field_type = FieldType.objects.create(
+                        project=project,
+                        name=name,
+                        **defaults
+                    )
+                    created_field_types.append(field_type)
+                    return field_type
                 except (IntegrityError, OperationalError) as db_error:
                     # If creation fails due to constraint, try to get it again
                     # (might have been created by another process or concurrent request)
                     if attempt < max_retries - 1:
                         # Reset connection and retry
                         connection.close()
+                        time.sleep(0.01 * (attempt + 1))  # Exponential backoff
                         continue
                     else:
                         # Last attempt - try to get it one more time
@@ -109,6 +115,7 @@ def _safe_get_or_create_field_type(project, name, defaults, created_field_types)
                     if attempt < max_retries - 1:
                         logger.warning(f"Database error creating FieldType {name} (attempt {attempt + 1}): {str(db_error)}")
                         connection.close()
+                        time.sleep(0.01 * (attempt + 1))
                         continue
                     else:
                         logger.error(f"Failed to create FieldType {name} after {max_retries} attempts: {str(db_error)}")
@@ -117,6 +124,7 @@ def _safe_get_or_create_field_type(project, name, defaults, created_field_types)
             if attempt < max_retries - 1:
                 logger.warning(f"Unexpected error creating FieldType {name} (attempt {attempt + 1}): {str(e)}")
                 connection.close()
+                time.sleep(0.01 * (attempt + 1))
                 continue
             else:
                 logger.error(f"Failed to create FieldType {name} after {max_retries} attempts: {str(e)}")
@@ -135,15 +143,15 @@ def _get_fallback_field_type(project):
         try:
             return FieldType.objects.get(project=project, name='string')
         except FieldType.DoesNotExist:
-            # Doesn't exist, try to create it in a separate transaction
+            # Doesn't exist, try to create it
+            # Don't use transaction.atomic() to avoid nested transaction issues
             try:
-                with transaction.atomic():
-                    return FieldType.objects.create(
-                        project=project,
-                        name='string',
-                        type='string',
-                        custom_type=False
-                    )
+                return FieldType.objects.create(
+                    project=project,
+                    name='string',
+                    type='string',
+                    custom_type=False
+                )
             except (IntegrityError, OperationalError):
                 # If creation fails, try to get it again
                 try:
@@ -192,26 +200,35 @@ def _safe_get_or_create(model_class, created_list=None, **kwargs):
             # Build lookup kwargs (everything except defaults)
             lookup_kwargs = kwargs.copy()
             
-            # Try to get existing first
+            # Try to get existing first (use select_for_update to prevent race conditions in production)
             try:
-                instance = model_class.objects.get(**lookup_kwargs)
+                # Use select_for_update only if we're in a transaction and it's a production database
+                # This prevents race conditions in concurrent environments
+                if connection.in_atomic_block and 'postgresql' in connection.vendor:
+                    instance = model_class.objects.select_for_update(nowait=True).get(**lookup_kwargs)
+                else:
+                    instance = model_class.objects.get(**lookup_kwargs)
                 return instance, False
             except model_class.DoesNotExist:
-                # Doesn't exist, try to create it in a separate transaction
+                # Doesn't exist, try to create it
+                # Don't use transaction.atomic() here as it can cause issues with connection pooling
+                # The outer transaction will handle the commit
                 try:
-                    with transaction.atomic():
-                        create_kwargs = lookup_kwargs.copy()
-                        create_kwargs.update(defaults)
-                        instance = model_class.objects.create(**create_kwargs)
-                        if created_list is not None:
-                            created_list.append(instance)
-                        return instance, True
+                    create_kwargs = lookup_kwargs.copy()
+                    create_kwargs.update(defaults)
+                    instance = model_class.objects.create(**create_kwargs)
+                    if created_list is not None:
+                        created_list.append(instance)
+                    return instance, True
                 except (IntegrityError, OperationalError) as db_error:
                     # If creation fails due to constraint, try to get it again
                     # (might have been created by another process or concurrent request)
                     if attempt < max_retries - 1:
                         # Reset connection and retry
                         connection.close()
+                        # Small delay to allow concurrent transaction to complete
+                        import time
+                        time.sleep(0.01 * (attempt + 1))  # Exponential backoff: 10ms, 20ms, 30ms
                         continue
                     else:
                         # Last attempt - try to get it one more time
@@ -225,6 +242,9 @@ def _safe_get_or_create(model_class, created_list=None, **kwargs):
                     if attempt < max_retries - 1:
                         logger.warning(f"Database error creating {model_class.__name__} (attempt {attempt + 1}): {str(db_error)}")
                         connection.close()
+                        # Small delay before retry
+                        import time
+                        time.sleep(0.01 * (attempt + 1))
                         continue
                     else:
                         logger.error(f"Failed to create {model_class.__name__} after {max_retries} attempts: {str(db_error)}")
@@ -233,6 +253,8 @@ def _safe_get_or_create(model_class, created_list=None, **kwargs):
             if attempt < max_retries - 1:
                 logger.warning(f"Unexpected error creating {model_class.__name__} (attempt {attempt + 1}): {str(e)}")
                 connection.close()
+                import time
+                time.sleep(0.01 * (attempt + 1))
                 continue
             else:
                 logger.error(f"Failed to create {model_class.__name__} after {max_retries} attempts: {str(e)}")
@@ -1513,9 +1535,40 @@ def import_yaml(request):
             messages.error(request, f'Invalid YAML: {str(e)}')
             return redirect('admin:index')
         
-        # Extract basic info
-        info = yaml_data.get('info', {})
-        project_name = info.get('title', 'Imported Project').split(' ')[0]  # Extract project name
+        # Wrap entire import in a transaction for production database compatibility
+        # This ensures all-or-nothing behavior and prevents connection pool issues
+        try:
+            with transaction.atomic():
+                return _perform_import(yaml_data, request)
+        except Exception as e:
+            # Log the full error for debugging
+            import traceback
+            error_type = type(e).__name__
+            error_details = str(e)
+            tb_str = traceback.format_exc()
+            logger.error(f"Import failed: {error_type}: {error_details}\n{tb_str}")
+            
+            # Return detailed error information
+            return JsonResponse({
+                'success': False,
+                'error': f'Import failed: {error_details}',
+                'error_type': error_type,
+                'error_details': error_details
+            }, status=500)
+
+
+def _perform_import(yaml_data, request):
+    """Perform the actual import operation within a transaction"""
+    # Initialize tracking lists
+    created_services = []
+    created_field_types = []
+    created_fields = []
+    created_db_payloads = []
+    created_db_fields = []
+    
+    # Extract basic info
+    info = yaml_data.get('info', {})
+    project_name = info.get('title', 'Imported Project').split(' ')[0]  # Extract project name
         
         # Extract service name: prefer x-service-name, otherwise try better parsing from title
         # x-service-name is in kebab-case, convert to proper name
@@ -1791,10 +1844,7 @@ def import_yaml(request):
                     pass
         
         # Process schemas to create field types and fields
-        created_field_types = []
-        created_fields = []
-        created_db_payloads = []
-        created_db_fields = []
+        # Lists are already initialized at the start of _perform_import
         
         # Collect all payload names that are already linked to channels/operations
         linked_payload_names = set()
@@ -2261,42 +2311,19 @@ def import_yaml(request):
                     except Exception as ft_error:
                         logger.warning(f"Failed to create FieldType {schema_name}: {str(ft_error)}")
         
-        # Add success message
-        success_message = f'Successfully imported YAML! Created: {len(created_events)} events, {len(created_payloads)} payloads, {len(created_field_types)} field types, {len(created_fields)} fields, {len(created_db_payloads)} database payloads, {len(created_db_fields)} database fields.'
-        
-        # Return JSON response for AJAX requests
-        return JsonResponse({
-            'success': True,
-            'message': success_message,
-            'created_counts': {
-                'events': len(created_events),
-                'payloads': len(created_payloads),
-                'field_types': len(created_field_types),
-                'fields': len(created_fields),
-                'db_payloads': len(created_db_payloads),
-                'db_fields': len(created_db_fields)
-            }
-        })
-        
-    except Exception as e:
-        # Add detailed error message with exception type and message
-        import traceback
-        error_details = str(e)
-        error_type = type(e).__name__
-        
-        # Get the traceback for debugging
-        tb_str = traceback.format_exc()
-        
-        # Create a detailed error message
-        error_message = f'Import failed: {error_type}: {error_details}'
-        
-        # Log the full traceback for debugging
-        logger.error(f"Import failed with error: {error_type}: {error_details}\n{tb_str}")
-        
-        # Return JSON response for AJAX requests with detailed error
-        return JsonResponse({
-            'success': False,
-            'error': error_message,
-            'error_type': error_type,
-            'error_details': error_details
-        })
+    # Add success message
+    success_message = f'Successfully imported YAML! Created: {len(created_events)} events, {len(created_payloads)} payloads, {len(created_field_types)} field types, {len(created_fields)} fields, {len(created_db_payloads)} database payloads, {len(created_db_fields)} database fields.'
+    
+    # Return JSON response for AJAX requests
+    return JsonResponse({
+        'success': True,
+        'message': success_message,
+        'created_counts': {
+            'events': len(created_events),
+            'payloads': len(created_payloads),
+            'field_types': len(created_field_types),
+            'fields': len(created_fields),
+            'db_payloads': len(created_db_payloads),
+            'db_fields': len(created_db_fields)
+        }
+    })
