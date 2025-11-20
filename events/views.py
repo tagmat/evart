@@ -1583,96 +1583,96 @@ def _perform_import(yaml_data, request):
     # Extract basic info
     info = yaml_data.get('info', {})
     project_name = info.get('title', 'Imported Project').split(' ')[0]  # Extract project name
-        
-        # Extract service name: prefer x-service-name, otherwise try better parsing from title
-        # x-service-name is in kebab-case, convert to proper name
-        x_service_name = info.get('x-service-name', '')
-        if x_service_name:
-            # Convert kebab-case to title case (e.g., "ocpp-gateway-service" -> "Ocpp Gateway Service")
-            service_name = ' '.join(word.capitalize() for word in x_service_name.split('-'))
+    
+    # Extract service name: prefer x-service-name, otherwise try better parsing from title
+    # x-service-name is in kebab-case, convert to proper name
+    x_service_name = info.get('x-service-name', '')
+    if x_service_name:
+        # Convert kebab-case to title case (e.g., "ocpp-gateway-service" -> "Ocpp Gateway Service")
+        service_name = ' '.join(word.capitalize() for word in x_service_name.split('-'))
+    else:
+        # Fallback: extract from title - take last 2-3 words as service name
+        title_words = info.get('title', 'Imported Service').split(' ')
+        if len(title_words) >= 3:
+            # Take last 2 words (e.g., "OCPP Gateway Service OCPP Bridge" -> "OCPP Bridge")
+            service_name = ' '.join(title_words[-2:])
+        elif len(title_words) == 2:
+            service_name = title_words[1]
         else:
-            # Fallback: extract from title - take last 2-3 words as service name
-            title_words = info.get('title', 'Imported Service').split(' ')
-            if len(title_words) >= 3:
-                # Take last 2 words (e.g., "OCPP Gateway Service OCPP Bridge" -> "OCPP Bridge")
-                service_name = ' '.join(title_words[-2:])
-            elif len(title_words) == 2:
-                service_name = title_words[1]
-            else:
-                service_name = 'Imported Service'
-        
-        # Create or get project
-        project_slug = re.sub(r'[^a-zA-Z0-9]', '', project_name.lower())[:20]
-        try:
-            project, created = _safe_get_or_create(
-                Project,
-                slug_name=project_slug,
-                defaults={'name': project_name}
-            )
-        except Exception as e:
-            logger.error(f"Failed to create/get Project: {str(e)}")
-            raise
-        
-        # Create or get service
-        service_slug = re.sub(r'[^a-zA-Z0-9]', '', service_name.lower())[:200]
-        original_title = info.get('title', '')
-        try:
-            service, created = _safe_get_or_create(
-                Service,
-                created_list=created_services,
-                project=project,
-                slug_name=service_slug,
-                defaults={
-                    'name': service_name,
-                    'asyncapi_version': yaml_data.get('asyncapi', '3.0.0'),
-                    'version': info.get('version', '1.0.0'),
-                    'description': info.get('description', 'Imported service'),
-                    'original_title': original_title,
-                    'x_general_name': info.get('x-general-name', ''),
-                    'x_service_name': info.get('x-service-name', '')
-                }
-            )
-        except Exception as e:
-            logger.error(f"Failed to create/get Service: {str(e)}")
-            raise
-        # Update metadata even if service already exists
-        if not created:
-            service.x_general_name = info.get('x-general-name', '') or service.x_general_name
-            service.x_service_name = info.get('x-service-name', '') or service.x_service_name
-            service.original_title = original_title or service.original_title
-            service.save()
-        
-        # Create domain
-        try:
-            domain, created = _safe_get_or_create(
-                Domain,
-                project=project,
-                name='default'
-            )
-        except Exception as e:
-            logger.error(f"Failed to create/get Domain: {str(e)}")
-            raise
-        
-        # Create event type
-        try:
-            event_type, created = _safe_get_or_create(
-                EventType,
-                name='event'
-            )
-        except Exception as e:
-            logger.error(f"Failed to create/get EventType: {str(e)}")
-            raise
-        
-        # Process channels and create events
-        channels = yaml_data.get('channels', {})
-        operations = yaml_data.get('operations', {})
-        yaml_messages = yaml_data.get('components', {}).get('messages', {})
-        schemas = yaml_data.get('components', {}).get('schemas', {})
-        
-        created_events = []
-        created_payloads = []
-        
-        for channel_name, channel_data in channels.items():
+            service_name = 'Imported Service'
+    
+    # Create or get project
+    project_slug = re.sub(r'[^a-zA-Z0-9]', '', project_name.lower())[:20]
+    try:
+        project, created = _safe_get_or_create(
+            Project,
+            slug_name=project_slug,
+            defaults={'name': project_name}
+        )
+    except Exception as e:
+        logger.error(f"Failed to create/get Project: {str(e)}")
+        raise
+    
+    # Create or get service
+    service_slug = re.sub(r'[^a-zA-Z0-9]', '', service_name.lower())[:200]
+    original_title = info.get('title', '')
+    try:
+        service, created = _safe_get_or_create(
+            Service,
+            created_list=created_services,
+            project=project,
+            slug_name=service_slug,
+            defaults={
+                'name': service_name,
+                'asyncapi_version': yaml_data.get('asyncapi', '3.0.0'),
+                'version': info.get('version', '1.0.0'),
+                'description': info.get('description', 'Imported service'),
+                'original_title': original_title,
+                'x_general_name': info.get('x-general-name', ''),
+                'x_service_name': info.get('x-service-name', '')
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to create/get Service: {str(e)}")
+        raise
+    # Update metadata even if service already exists
+    if not created:
+        service.x_general_name = info.get('x-general-name', '') or service.x_general_name
+        service.x_service_name = info.get('x-service-name', '') or service.x_service_name
+        service.original_title = original_title or service.original_title
+        service.save()
+    
+    # Create domain
+    try:
+        domain, created = _safe_get_or_create(
+            Domain,
+            project=project,
+            name='default'
+        )
+    except Exception as e:
+        logger.error(f"Failed to create/get Domain: {str(e)}")
+        raise
+    
+    # Create event type
+    try:
+        event_type, created = _safe_get_or_create(
+            EventType,
+            name='event'
+        )
+    except Exception as e:
+        logger.error(f"Failed to create/get EventType: {str(e)}")
+        raise
+    
+    # Process channels and create events
+    channels = yaml_data.get('channels', {})
+    operations = yaml_data.get('operations', {})
+    yaml_messages = yaml_data.get('components', {}).get('messages', {})
+    schemas = yaml_data.get('components', {}).get('schemas', {})
+    
+    created_events = []
+    created_payloads = []
+    
+    for channel_name, channel_data in channels.items():
             # Convert PascalCase to snake_case for event name
             event_snake_name = re.sub('([A-Z]+)', r'_\1', channel_name).lower().strip('_')
             
@@ -1738,16 +1738,20 @@ def _perform_import(yaml_data, request):
                                         payload = matching_payload
                                     else:
                                         # Create new payload
-                                        payload, created = Payload.objects.get_or_create(
-                                            project=project,
-                                            name=payload_name,
-                                            defaults={
-                                                'name': payload_name,
-                                                'description': schemas.get(f'Data_{payload_name}Payload', {}).get('description', '')
-                                            }
-                                        )
-                                        if created:
-                                            created_payloads.append(payload)
+                                        try:
+                                            payload, created = _safe_get_or_create(
+                                                Payload,
+                                                created_list=created_payloads,
+                                                project=project,
+                                                name=payload_name,
+                                                defaults={
+                                                    'name': payload_name,
+                                                    'description': schemas.get(f'Data_{payload_name}Payload', {}).get('description', '')
+                                                }
+                                            )
+                                        except Exception as payload_error:
+                                            logger.warning(f"Failed to create Payload {payload_name}: {str(payload_error)}")
+                                            continue
                                     
                                     # Assign to request or response based on message name
                                     if message_name.endswith('Response'):
@@ -1791,125 +1795,125 @@ def _perform_import(yaml_data, request):
                 event.save()
             
             created_events.append(event)
+    
+    # Process operations to set consumes/publishes relationships and store endpoints
+    for op_name, op_data in operations.items():
+        action = op_data.get('action')
+        channel_ref = op_data.get('channel', {}).get('$ref', '')
+        endpoint = op_data.get('x-endpoint', '')
         
-        # Process operations to set consumes/publishes relationships and store endpoints
-        for op_name, op_data in operations.items():
-            action = op_data.get('action')
-            channel_ref = op_data.get('channel', {}).get('$ref', '')
-            endpoint = op_data.get('x-endpoint', '')
+        if channel_ref:
+            channel_name = channel_ref.split('/')[-1]
             
-            if channel_ref:
-                channel_name = channel_ref.split('/')[-1]
-                
-                # Find the corresponding event
-                # Try to find the exact event first (for Response channels)
-                event_snake_name = re.sub('([A-Z]+)', r'_\1', channel_name).lower().strip('_')
-                event = None
-                
+            # Find the corresponding event
+            # Try to find the exact event first (for Response channels)
+            event_snake_name = re.sub('([A-Z]+)', r'_\1', channel_name).lower().strip('_')
+            event = None
+            
+            try:
+                event = Event.objects.get(domain=domain, name=event_snake_name)
+            except Event.DoesNotExist:
+                # If not found, try without Response suffix (for backward compatibility)
+                event_name = channel_name.replace('Response', '')
+                event_snake_name = re.sub('([A-Z]+)', r'_\1', event_name).lower().strip('_')
                 try:
                     event = Event.objects.get(domain=domain, name=event_snake_name)
                 except Event.DoesNotExist:
-                    # If not found, try without Response suffix (for backward compatibility)
-                    event_name = channel_name.replace('Response', '')
-                    event_snake_name = re.sub('([A-Z]+)', r'_\1', event_name).lower().strip('_')
-                    try:
-                        event = Event.objects.get(domain=domain, name=event_snake_name)
-                    except Event.DoesNotExist:
-                        continue
-                
-                # Store endpoint if provided (for both send and receive operations)
-                if endpoint:
-                    event.endpoint = endpoint
-                    event.save()
-                
-                try:
-                    if action == 'receive':
-                        # Check if already exists to avoid duplicate key errors
-                        if not service.consumes.filter(id=event.id).exists():
-                            service.consumes.add(event)
-                    elif action == 'send':
-                        # Check if already exists to avoid duplicate key errors
-                        if not service.publishes.filter(id=event.id).exists():
-                            service.publishes.add(event)
-                except (OperationalError, IntegrityError, Exception) as m2m_error:
-                    # Log but continue - don't let ManyToMany errors block the import
-                    logger.warning(f"Failed to add event {event.name} to service {service.name} ({action}): {str(m2m_error)}")
                     continue
-        
-        # Ensure all Response channels are linked to service
-        # This is a safety net to catch any Response events that weren't linked via operations
-        # Django's .add() is idempotent, so it's safe to call even if already linked
-        for channel_name, channel_data in channels.items():
-            if channel_name.endswith('Response'):
-                event_snake_name = re.sub('([A-Z]+)', r'_\1', channel_name).lower().strip('_')
+            
+            # Store endpoint if provided (for both send and receive operations)
+            if endpoint:
+                event.endpoint = endpoint
+                event.save()
+            
+            try:
+                if action == 'receive':
+                    # Check if already exists to avoid duplicate key errors
+                    if not service.consumes.filter(id=event.id).exists():
+                        service.consumes.add(event)
+                elif action == 'send':
+                    # Check if already exists to avoid duplicate key errors
+                    if not service.publishes.filter(id=event.id).exists():
+                        service.publishes.add(event)
+            except (OperationalError, IntegrityError, Exception) as m2m_error:
+                # Log but continue - don't let ManyToMany errors block the import
+                logger.warning(f"Failed to add event {event.name} to service {service.name} ({action}): {str(m2m_error)}")
+                continue
+    
+    # Ensure all Response channels are linked to service
+    # This is a safety net to catch any Response events that weren't linked via operations
+    # Django's .add() is idempotent, so it's safe to call even if already linked
+    for channel_name, channel_data in channels.items():
+        if channel_name.endswith('Response'):
+            event_snake_name = re.sub('([A-Z]+)', r'_\1', channel_name).lower().strip('_')
+            try:
+                event = Event.objects.get(domain=domain, name=event_snake_name)
+                # Response channels are typically published (sent) by the service
+                # Check if already linked to avoid unnecessary database calls
                 try:
-                    event = Event.objects.get(domain=domain, name=event_snake_name)
-                    # Response channels are typically published (sent) by the service
-                    # Check if already linked to avoid unnecessary database calls
-                    try:
-                        if not service.publishes.filter(id=event.id).exists() and not service.consumes.filter(id=event.id).exists():
-                            service.publishes.add(event)
-                    except Exception as m2m_error:
-                        # Log but continue - don't let ManyToMany errors block the import
-                        logger.warning(f"Failed to add response event {event.name} to service {service.name}: {str(m2m_error)}")
-                        pass
-                except Event.DoesNotExist:
-                    # Event doesn't exist, skip
+                    if not service.publishes.filter(id=event.id).exists() and not service.consumes.filter(id=event.id).exists():
+                        service.publishes.add(event)
+                except Exception as m2m_error:
+                    # Log but continue - don't let ManyToMany errors block the import
+                    logger.warning(f"Failed to add response event {event.name} to service {service.name}: {str(m2m_error)}")
                     pass
-        
-        # Process schemas to create field types and fields
-        # Lists are already initialized at the start of _perform_import
-        
-        # Collect all payload names that are already linked to channels/operations
-        linked_payload_names = set()
-        for event in created_events:
-            if event.payload:
-                linked_payload_names.add(event.payload.name)
-            if event.response_payload:
-                linked_payload_names.add(event.response_payload.name)
-        # Also check existing events
-        for event in Event.objects.filter(domain__project=project):
-            if event.payload:
-                linked_payload_names.add(event.payload.name)
-            if event.response_payload:
-                linked_payload_names.add(event.response_payload.name)
-        
-        for schema_name, schema_data in schemas.items():
-            if schema_name.startswith('Data_'):
-                # This is a data schema, find corresponding payload
-                payload_name = schema_name.replace('Data_', '').replace('Payload', '')
-                try:
-                    payload = Payload.objects.get(project=project, name=payload_name)
-                except Payload.DoesNotExist:
-                    # Payload doesn't exist - check if it's a standalone payload
-                    # (i.e., the corresponding Payload schema exists in schemas)
-                    payload_schema_name = f'{payload_name}Payload'
-                    if payload_schema_name in schemas and payload_name not in linked_payload_names:
-                        # This is a standalone payload - create it
-                        payload_schema_data = schemas[payload_schema_name]
-                        try:
-                            payload, created = _safe_get_or_create(
-                                Payload,
-                                created_list=created_payloads,
-                                project=project,
-                                name=payload_name,
-                                defaults={
-                                    'name': payload_name,
-                                    'description': payload_schema_data.get('description', '')
-                                }
-                            )
-                        except Exception as payload_error:
-                            logger.warning(f"Failed to create Payload {payload_name}: {str(payload_error)}")
-                            continue
-                    else:
-                        # Not a standalone payload or already linked, skip
+            except Event.DoesNotExist:
+                # Event doesn't exist, skip
+                pass
+    
+    # Process schemas to create field types and fields
+    # Lists are already initialized at the start of _perform_import
+    
+    # Collect all payload names that are already linked to channels/operations
+    linked_payload_names = set()
+    for event in created_events:
+        if event.payload:
+            linked_payload_names.add(event.payload.name)
+        if event.response_payload:
+            linked_payload_names.add(event.response_payload.name)
+    # Also check existing events
+    for event in Event.objects.filter(domain__project=project):
+        if event.payload:
+            linked_payload_names.add(event.payload.name)
+        if event.response_payload:
+            linked_payload_names.add(event.response_payload.name)
+    
+    for schema_name, schema_data in schemas.items():
+        if schema_name.startswith('Data_'):
+            # This is a data schema, find corresponding payload
+            payload_name = schema_name.replace('Data_', '').replace('Payload', '')
+            try:
+                payload = Payload.objects.get(project=project, name=payload_name)
+            except Payload.DoesNotExist:
+                # Payload doesn't exist - check if it's a standalone payload
+                # (i.e., the corresponding Payload schema exists in schemas)
+                payload_schema_name = f'{payload_name}Payload'
+                if payload_schema_name in schemas and payload_name not in linked_payload_names:
+                    # This is a standalone payload - create it
+                    payload_schema_data = schemas[payload_schema_name]
+                    try:
+                        payload, created = _safe_get_or_create(
+                            Payload,
+                            created_list=created_payloads,
+                            project=project,
+                            name=payload_name,
+                            defaults={
+                                'name': payload_name,
+                                'description': payload_schema_data.get('description', '')
+                            }
+                        )
+                    except Exception as payload_error:
+                        logger.warning(f"Failed to create Payload {payload_name}: {str(payload_error)}")
                         continue
-                
-                # Process properties
-                properties = schema_data.get('properties', {})
-                required_fields = schema_data.get('required', [])
-                
-                for field_name, field_data in properties.items():
+                else:
+                    # Not a standalone payload or already linked, skip
+                    continue
+            
+            # Process properties
+            properties = schema_data.get('properties', {})
+            required_fields = schema_data.get('required', [])
+            
+            for field_name, field_data in properties.items():
                     try:
                         # Create or get field type with comprehensive handling
                         field_type = create_or_get_field_type(project, field_data, created_field_types)
@@ -1962,81 +1966,80 @@ def _perform_import(yaml_data, request):
                         # Log but continue - don't let individual field errors block the import
                         logger.warning(f"Failed to create Field {field_name} for payload {payload_name}: {str(field_error)}")
                         continue
+        
+        elif schema_name.endswith('Payload') and not schema_name.startswith('Data_') and not schema_name.startswith('DB_'):
+            # This is a main payload schema - check if it has inline data object
+            # (instead of $ref to Data_* schema)
+            payload_name = schema_name.replace('Payload', '')
+            payload_properties = schema_data.get('properties', {})
+            data_property = payload_properties.get('data', {})
             
-            elif schema_name.endswith('Payload') and not schema_name.startswith('Data_') and not schema_name.startswith('DB_'):
-                # This is a main payload schema - check if it has inline data object
-                # (instead of $ref to Data_* schema)
-                payload_name = schema_name.replace('Payload', '')
-                payload_properties = schema_data.get('properties', {})
-                data_property = payload_properties.get('data', {})
-                
-                # Check if data property is an inline object (not a $ref)
-                if isinstance(data_property, dict) and 'type' in data_property and data_property.get('type') == 'object':
-                    # This payload has inline data object, not a Data_* schema reference
-                    try:
-                        payload = Payload.objects.get(project=project, name=payload_name)
-                        
-                        # Extract properties from inline data object
-                        inline_data_properties = data_property.get('properties', {})
-                        inline_required_fields = data_property.get('required', [])
-                        
-                        for field_name, field_data in inline_data_properties.items():
-                            try:
-                                # Create or get field type
-                                field_type = create_or_get_field_type(project, field_data, created_field_types)
-                                
-                                # Skip if field_type is None (fallback failed)
-                                if field_type is None:
-                                    logger.warning(f"Skipping Field {field_name} for inline payload: no valid FieldType available")
-                                    continue
-                                
-                                # Handle array items and schema references
-                                array_items_type = None
-                                array_items_ref = None
-                                schema_ref = None
-                                
-                                if field_data.get('type') == 'array' and 'items' in field_data:
-                                    items = field_data['items']
-                                    if isinstance(items, dict):
-                                        if 'type' in items:
-                                            array_items_type = items['type']
-                                        if '$ref' in items:
-                                            array_items_ref = items['$ref']
-                                
-                                if '$ref' in field_data:
-                                    schema_ref = field_data['$ref']
-                                
-                                # Create field
-                                try:
-                                    field, created = _safe_get_or_create(
-                                        Field,
-                                        created_list=created_fields,
-                                        payload=payload,
-                                        name=field_name,
-                                        defaults={
-                                            'type': field_type,
-                                            'required': field_name in inline_required_fields,
-                                            'description': field_data.get('description', ''),
-                                            'minimum': field_data.get('minimum'),
-                                            'maximum': field_data.get('maximum'),
-                                            'array_items_type': array_items_type,
-                                            'array_items_ref': array_items_ref,
-                                            'schema_ref': schema_ref
-                                        }
-                                    )
-                                except Exception as field_create_error:
-                                    logger.warning(f"Failed to create Field {field_name} for inline payload: {str(field_create_error)}")
-                                    continue
-                            except Exception as field_error:
-                                # Log but continue - don't let individual field errors block the import
-                                logger.warning(f"Failed to create Field {field_name} for inline payload {payload_name}: {str(field_error)}")
+            # Check if data property is an inline object (not a $ref)
+            if isinstance(data_property, dict) and 'type' in data_property and data_property.get('type') == 'object':
+                # This payload has inline data object, not a Data_* schema reference
+                try:
+                    payload = Payload.objects.get(project=project, name=payload_name)
+                    
+                    # Extract properties from inline data object
+                    inline_data_properties = data_property.get('properties', {})
+                    inline_required_fields = data_property.get('required', [])
+                    
+                    for field_name, field_data in inline_data_properties.items():
+                        try:
+                            # Create or get field type
+                            field_type = create_or_get_field_type(project, field_data, created_field_types)
+                            
+                            # Skip if field_type is None (fallback failed)
+                            if field_type is None:
+                                logger.warning(f"Skipping Field {field_name} for inline payload: no valid FieldType available")
                                 continue
-                                
-                    except Payload.DoesNotExist:
-                        # Payload doesn't exist yet, skip (it will be handled elsewhere)
-                        continue
-            
-            elif schema_name.startswith('DB_'):
+                            
+                            # Handle array items and schema references
+                            array_items_type = None
+                            array_items_ref = None
+                            schema_ref = None
+                            
+                            if field_data.get('type') == 'array' and 'items' in field_data:
+                                items = field_data['items']
+                                if isinstance(items, dict):
+                                    if 'type' in items:
+                                        array_items_type = items['type']
+                                    if '$ref' in items:
+                                        array_items_ref = items['$ref']
+                            
+                            if '$ref' in field_data:
+                                schema_ref = field_data['$ref']
+                            
+                            # Create field
+                            try:
+                                field, created = _safe_get_or_create(
+                                    Field,
+                                    created_list=created_fields,
+                                    payload=payload,
+                                    name=field_name,
+                                    defaults={
+                                        'type': field_type,
+                                        'required': field_name in inline_required_fields,
+                                        'description': field_data.get('description', ''),
+                                        'minimum': field_data.get('minimum'),
+                                        'maximum': field_data.get('maximum'),
+                                        'array_items_type': array_items_type,
+                                        'array_items_ref': array_items_ref,
+                                        'schema_ref': schema_ref
+                                    }
+                                )
+                            except Exception as field_create_error:
+                                logger.warning(f"Failed to create Field {field_name} for inline payload: {str(field_create_error)}")
+                                continue
+                        except Exception as field_error:
+                            # Log but continue - don't let individual field errors block the import
+                            logger.warning(f"Failed to create Field {field_name} for inline payload {payload_name}: {str(field_error)}")
+                            continue
+                except Payload.DoesNotExist:
+                    # Payload doesn't exist yet, skip (it will be handled elsewhere)
+                    continue
+        
+        elif schema_name.startswith('DB_'):
                 # This is a database schema
                 # Wrap in try/except to prevent blocking FieldType/Field creation if service_id column doesn't exist
                 try:
@@ -2137,8 +2140,8 @@ def _perform_import(yaml_data, request):
                             field_type = create_or_get_field_type(project, field_data, created_field_types)
                         except Exception:
                             continue
-            
-            elif schema_name.endswith('Payload'):
+        
+        elif schema_name.endswith('Payload'):
                 # This is a main payload schema
                 # Check if it's already linked to a channel/operation
                 payload_name = schema_name.replace('Payload', '')
@@ -2274,8 +2277,8 @@ def _perform_import(yaml_data, request):
                                 continue
                 # If already linked, skip (it was handled above)
                 continue
-            
-            else:
+        
+        else:
                 # This might be a standalone field type (enum, custom type, etc.)
                 if 'enum' in schema_data:
                     # This is an enum type
