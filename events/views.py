@@ -73,20 +73,12 @@ def _safe_get_or_create_field_type(project, name, defaults, created_field_types)
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            # Close any stale connections before attempting operation
-            connection.close_if_unusable_or_obsolete()
-            
             # Try to get existing first
             try:
-                # Use select_for_update in production to prevent race conditions
-                if connection.in_atomic_block and 'postgresql' in connection.vendor:
-                    field_type = FieldType.objects.select_for_update(nowait=True).get(project=project, name=name)
-                else:
-                    field_type = FieldType.objects.get(project=project, name=name)
+                field_type = FieldType.objects.get(project=project, name=name)
                 return field_type
             except FieldType.DoesNotExist:
                 # Doesn't exist, try to create it
-                # Don't use transaction.atomic() to avoid nested transaction issues in production
                 try:
                     field_type = FieldType.objects.create(
                         project=project,
@@ -99,7 +91,6 @@ def _safe_get_or_create_field_type(project, name, defaults, created_field_types)
                     # If creation fails due to constraint, try to get it again
                     # (might have been created by another process or concurrent request)
                     if attempt < max_retries - 1:
-                        # Don't close connection if we're in a transaction - just retry
                         time.sleep(0.01 * (attempt + 1))  # Exponential backoff
                         continue
                     else:
@@ -110,7 +101,7 @@ def _safe_get_or_create_field_type(project, name, defaults, created_field_types)
                             logger.error(f"FieldType {name} does not exist and cannot be created after {max_retries} attempts: {str(db_error)}")
                             return _get_fallback_field_type(project)
                 except (DatabaseError, Exception) as db_error:
-                    # For other database errors, retry without closing connection
+                    # For other database errors, retry
                     if attempt < max_retries - 1:
                         logger.warning(f"Database error creating FieldType {name} (attempt {attempt + 1}): {str(db_error)}")
                         time.sleep(0.01 * (attempt + 1))
@@ -134,14 +125,11 @@ def _safe_get_or_create_field_type(project, name, defaults, created_field_types)
 def _get_fallback_field_type(project):
     """Get or create a default string field type as fallback"""
     try:
-        connection.close_if_unusable_or_obsolete()
-        
         # Try to get existing first
         try:
             return FieldType.objects.get(project=project, name='string')
         except FieldType.DoesNotExist:
             # Doesn't exist, try to create it
-            # Don't use transaction.atomic() to avoid nested transaction issues
             try:
                 return FieldType.objects.create(
                     project=project,
@@ -157,7 +145,6 @@ def _get_fallback_field_type(project):
                     pass
             except Exception as create_error:
                 logger.warning(f"Fallback FieldType creation failed: {str(create_error)}")
-                # Don't close connection - let Django handle it
         
         # Try to get any existing string type
         try:
@@ -174,7 +161,6 @@ def _get_fallback_field_type(project):
         # Even fallback failed, try to get any existing string type
         logger.error(f"Fallback FieldType creation also failed: {str(fallback_error)}")
         try:
-            # Don't close connection - let Django handle it
             return FieldType.objects.filter(project=project, name='string').first() or \
                    FieldType.objects.filter(project=project, type='string').first() or \
                    FieldType.objects.filter(project=project).first()
@@ -191,24 +177,15 @@ def _safe_get_or_create(model_class, created_list=None, **kwargs):
     
     for attempt in range(max_retries):
         try:
-            # Close any stale connections before attempting operation
-            connection.close_if_unusable_or_obsolete()
-            
             # Build lookup kwargs (everything except defaults)
             lookup_kwargs = kwargs.copy()
             
-            # Try to get existing first (use select_for_update to prevent race conditions in production)
+            # Try to get existing first
             try:
-                # Use select_for_update only if we're in a transaction and it's a production database
-                # This prevents race conditions in concurrent environments
-                if connection.in_atomic_block and 'postgresql' in connection.vendor:
-                    instance = model_class.objects.select_for_update(nowait=True).get(**lookup_kwargs)
-                else:
-                    instance = model_class.objects.get(**lookup_kwargs)
+                instance = model_class.objects.get(**lookup_kwargs)
                 return instance, False
             except model_class.DoesNotExist:
                 # Doesn't exist, try to create it
-                # Don't use transaction.atomic() here as it can cause issues with connection pooling
                 # The outer transaction will handle the commit
                 try:
                     create_kwargs = lookup_kwargs.copy()
@@ -221,7 +198,6 @@ def _safe_get_or_create(model_class, created_list=None, **kwargs):
                     # If creation fails due to constraint, try to get it again
                     # (might have been created by another process or concurrent request)
                     if attempt < max_retries - 1:
-                        # Don't close connection if we're in a transaction - just retry
                         # Small delay to allow concurrent transaction to complete
                         time.sleep(0.01 * (attempt + 1))  # Exponential backoff: 10ms, 20ms, 30ms
                         continue
@@ -233,10 +209,9 @@ def _safe_get_or_create(model_class, created_list=None, **kwargs):
                             logger.error(f"{model_class.__name__} does not exist and cannot be created after {max_retries} attempts: {str(db_error)}")
                             raise
                 except (DatabaseError, Exception) as db_error:
-                    # For other database errors, retry without closing connection
+                    # For other database errors, retry
                     if attempt < max_retries - 1:
                         logger.warning(f"Database error creating {model_class.__name__} (attempt {attempt + 1}): {str(db_error)}")
-                        # Small delay before retry
                         time.sleep(0.01 * (attempt + 1))
                         continue
                     else:
