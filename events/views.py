@@ -2271,8 +2271,6 @@ def _perform_import(yaml_data, request):
                                     continue
                             except Exception as field_error:
                                 # Log but continue - don't let individual field errors block the import
-                                import logging
-                                logger = logging.getLogger(__name__)
                                 logger.warning(f"Failed to create Field {field_name} for payload {payload_name}: {str(field_error)}")
                                 continue
                 # If already linked, skip (it was handled above)
