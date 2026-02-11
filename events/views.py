@@ -725,6 +725,16 @@ def generate_full_yaml(request, service_id):
             
         configuration['components']['schemas']["{1}{0}".format(dbpayload.name, "DB_")] = schema_config
 
+    # Add aliases for DB payload parser schema IDs (e.g., User -> DB_User)
+    for dbpayload in DatabasePayload.objects.filter(service=service):
+        if dbpayload.x_parser_schema_id:
+            db_schema_key = "DB_{0}".format(dbpayload.name)
+            if db_schema_key in configuration['components']['schemas'] and \
+               dbpayload.x_parser_schema_id not in configuration['components']['schemas']:
+                configuration['components']['schemas'][dbpayload.x_parser_schema_id] = {
+                    '$ref': "#/components/schemas/{0}".format(db_schema_key)
+                }
+
     # Collect all FieldTypes used by this service's payloads
     service_field_types = set()
     for payload in service_payloads:
@@ -744,6 +754,80 @@ def generate_full_yaml(request, service_id):
             if schema_def:
                 # Use the stored schema definition as-is (don't add x-parser-schema-id)
                 configuration['components']['schemas'][field_type.name] = schema_def.copy()
+
+    # Include schemas referenced via $ref so exports stay complete
+    referenced_schema_names = set()
+
+    def add_ref_schema_name(ref_value):
+        if isinstance(ref_value, str) and '/schemas/' in ref_value:
+            schema_name = ref_value.split('/')[-1]
+            if schema_name:
+                referenced_schema_names.add(schema_name)
+
+    def collect_ref_schema_names(obj, names):
+        if isinstance(obj, dict):
+            ref_value = obj.get('$ref')
+            if ref_value:
+                add_ref_schema_name(ref_value)
+            for value in obj.values():
+                collect_ref_schema_names(value, names)
+        elif isinstance(obj, list):
+            for item in obj:
+                collect_ref_schema_names(item, names)
+
+    # Collect refs from payload field definitions
+    for payload in service_payloads:
+        for field in payload.field_set.all():
+            add_ref_schema_name(field.schema_ref)
+            add_ref_schema_name(field.array_items_ref)
+
+    # Collect refs from already-built schemas (e.g., nested refs)
+    for schema_data in configuration['components']['schemas'].values():
+        collect_ref_schema_names(schema_data, referenced_schema_names)
+
+    field_type_cache = {}
+
+    def get_field_type_by_name(schema_name):
+        if schema_name not in field_type_cache:
+            field_type_cache[schema_name] = FieldType.objects.filter(
+                project=service.project, name=schema_name
+            ).first()
+        return field_type_cache[schema_name]
+
+    def build_schema_from_field_type(field_type):
+        if field_type.type == 'object':
+            schema_def = field_type.get_schema_definition()
+            if schema_def:
+                return schema_def.copy()
+            schema_def = {'type': 'object'}
+        else:
+            schema_def = {'type': field_type.type}
+
+        if field_type.format:
+            schema_def['format'] = field_type.format
+        if field_type.max_length and field_type.max_length > 0:
+            schema_def['maxLength'] = field_type.max_length
+        if field_type.enum_choices:
+            enum_choices = field_type.enum_choices.replace(" ", "").split(",")
+            schema_def['enum'] = enum_choices
+        return schema_def
+
+    resolved_schema_names = set()
+    while referenced_schema_names:
+        schema_name = referenced_schema_names.pop()
+        if schema_name in configuration['components']['schemas'] or schema_name in resolved_schema_names:
+            continue
+        field_type = get_field_type_by_name(schema_name)
+        if not field_type:
+            resolved_schema_names.add(schema_name)
+            continue
+        schema_def = build_schema_from_field_type(field_type)
+        if not schema_def:
+            resolved_schema_names.add(schema_name)
+            continue
+        configuration['components']['schemas'][schema_name] = schema_def
+        collect_ref_schema_names(schema_def, referenced_schema_names)
+        resolved_schema_names.add(schema_name)
 
     # Custom YAML representer to force double quotes for strings
     class DoubleQuotedString(str):
