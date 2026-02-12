@@ -117,9 +117,29 @@ class DomainAdmin(admin.ModelAdmin):
 
 
 class PayloadAdmin(admin.ModelAdmin):
-    list_display = ["name"]
+    list_display = ["name", "domain_list"]
     inlines = [FieldInline, ]
     # list_filter = ["grpc_request_payload", "grpc_response_payload"]
+    
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.prefetch_related("event_set__domain", "response_of_event__domain")
+    
+    @admin.display(description="Domains", empty_value="-")
+    def domain_list(self, obj):
+        domains = {
+            event.domain.name
+            for event in obj.event_set.all()
+            if event.domain_id and event.domain
+        }
+        domains.update(
+            event.domain.name
+            for event in obj.response_of_event.all()
+            if event.domain_id and event.domain
+        )
+        if not domains:
+            return None
+        return ", ".join(sorted(domains))
 
 
 class DatabasePayloadAdmin(admin.ModelAdmin):
@@ -159,6 +179,9 @@ class ServiceAdmin(NestedModelAdmin):
     # inlines = [GrpcPackageInline, ]
     inlines = [DatabasePayloadInline]
     filter_horizontal = ["consumes", "publishes", "database_payloads"]
+    
+    class Media:
+        js = ("events/admin/service_copy_paste.js",)
     
     def get_inlines(self, request, obj):
         """Conditionally show DatabasePayloadInline only if column exists"""
