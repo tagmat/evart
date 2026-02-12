@@ -35,8 +35,8 @@ def service_column_exists():
 
 
 class EventAdmin(admin.ModelAdmin):
-    list_display = ["name", "type", "domain", "payload", "response_payload", "is_sync", "is_post", "address"]
-    list_filter = ["domain", "type", "payload", "response_payload", "is_sync", "is_post", "address"]
+    list_display = ["name", "type", "domain", "payload", "response_payload", "is_sync", "is_post", "is_jwt", "address"]
+    list_filter = ["domain", "type", "payload", "response_payload", "is_sync", "is_post", "is_jwt", "address"]
 
 
 class EventInline(admin.TabularInline):

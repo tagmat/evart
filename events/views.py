@@ -356,7 +356,7 @@ def generate_full_yaml(request, service_id):
             'description': description,
             'x-is-sync': event.is_sync
         }
-        
+                
         # Add x-is-post before address for sync events
         if event.is_sync:
             channel_config['x-is-post'] = event.is_post
@@ -429,7 +429,7 @@ def generate_full_yaml(request, service_id):
                 # Default to receive if somehow not in either (shouldn't happen)
                 action = 'receive'
             
-            configuration['operations'][operation_name] = {
+            operation_config = {
                 'action': action,
                 'channel': {
                     '$ref': "#/channels/{0}".format(channel_name)
@@ -440,6 +440,11 @@ def generate_full_yaml(request, service_id):
                 'x-operation-name': channel_name,
                 'x-endpoint': endpoint
             }
+            
+            if event.is_sync:
+                operation_config['x-jwt'] = event.is_jwt
+            
+            configuration['operations'][operation_name] = operation_config
 
         # Create message components
         # Generate proper title from channel name with spacing
@@ -993,6 +998,7 @@ def parse_yaml_for_preview(yaml_content):
             'type_name': event.type.name,
             'is_sync': event.is_sync,
             'is_post': event.is_post,
+            'is_jwt': event.is_jwt,
             'address': event.address,
             'endpoint': event.endpoint,
             'description': event.description,
@@ -1170,6 +1176,15 @@ def parse_yaml_for_preview(yaml_content):
     operations = yaml_data.get('operations', {})
     yaml_messages = yaml_data.get('components', {}).get('messages', {})
     schemas = yaml_data.get('components', {}).get('schemas', {})
+    operation_jwt_by_channel = {}
+    
+    for op_data in operations.values():
+        channel_ref = op_data.get('channel', {}).get('$ref', '')
+        if not channel_ref or 'x-jwt' not in op_data:
+            continue
+        channel_name = channel_ref.split('/')[-1]
+        if channel_name:
+            operation_jwt_by_channel[channel_name] = op_data.get('x-jwt')
     
     for channel_name, channel_data in channels.items():
         # Convert PascalCase to snake_case for event name
@@ -1200,12 +1215,18 @@ def parse_yaml_for_preview(yaml_content):
                             request_payload_name = payload_name
         
         # Create event preview - check for exact match
+        jwt_value = channel_data.get('x-jwt')
+        if jwt_value is None:
+            jwt_value = operation_jwt_by_channel.get(channel_name)
+        if jwt_value is None:
+            jwt_value = False
         event_preview = {
             'name': event_snake_name,
             'domain_name': 'default',
             'type_name': 'event',
             'is_sync': channel_data.get('x-is-sync', True),
             'is_post': channel_data.get('x-is-post', False),
+            'is_jwt': jwt_value,
             'address': channel_data.get('address'),
             'endpoint': f"/{channel_name}",
             'description': channel_data.get('description', ''),
@@ -1230,6 +1251,8 @@ def parse_yaml_for_preview(yaml_content):
                     conflicts.append(f"is_sync: existing={existing_event['is_sync']}, new={event_preview['is_sync']}")
                 if existing_event['is_post'] != event_preview['is_post']:
                     conflicts.append(f"is_post: existing={existing_event['is_post']}, new={event_preview['is_post']}")
+                if existing_event.get('is_jwt') != event_preview['is_jwt']:
+                    conflicts.append(f"is_jwt: existing={existing_event.get('is_jwt')}, new={event_preview['is_jwt']}")
                 if existing_event['address'] != event_preview['address']:
                     conflicts.append(f"address: existing='{existing_event['address']}', new='{event_preview['address']}'")
                 if existing_event['description'] != event_preview['description']:
@@ -1746,6 +1769,15 @@ def _perform_import(yaml_data, request):
     operations = yaml_data.get('operations', {})
     yaml_messages = yaml_data.get('components', {}).get('messages', {})
     schemas = yaml_data.get('components', {}).get('schemas', {})
+    operation_jwt_by_channel = {}
+    
+    for op_data in operations.values():
+        channel_ref = op_data.get('channel', {}).get('$ref', '')
+        if not channel_ref or 'x-jwt' not in op_data:
+            continue
+        channel_name = channel_ref.split('/')[-1]
+        if channel_name:
+            operation_jwt_by_channel[channel_name] = op_data.get('x-jwt')
     
     created_events = []
     created_payloads = []
@@ -1838,6 +1870,11 @@ def _perform_import(yaml_data, request):
                                         request_payload = payload
             
             # Create event
+            jwt_value = channel_data.get('x-jwt')
+            if jwt_value is None:
+                jwt_value = operation_jwt_by_channel.get(channel_name)
+            if jwt_value is None:
+                jwt_value = False
             try:
                 event, created = _safe_get_or_create(
                     Event,
@@ -1850,6 +1887,7 @@ def _perform_import(yaml_data, request):
                         'response_payload': response_payload,
                         'is_sync': channel_data.get('x-is-sync', True),
                         'is_post': channel_data.get('x-is-post', False),
+                        'is_jwt': jwt_value,
                         'address': channel_data.get('address'),
                         'endpoint': f"/{channel_name}",
                         'description': channel_data.get('description', ''),
@@ -1866,6 +1904,7 @@ def _perform_import(yaml_data, request):
                 event.response_payload = response_payload
                 event.is_sync = channel_data.get('x-is-sync', True)
                 event.is_post = channel_data.get('x-is-post', False)
+                event.is_jwt = jwt_value
                 event.address = channel_data.get('address')
                 event.endpoint = f"/{channel_name}"
                 event.description = channel_data.get('description', '')

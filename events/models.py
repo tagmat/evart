@@ -22,6 +22,7 @@ class Event(models.Model):
     type = models.ForeignKey("EventType", default=1, on_delete=models.CASCADE)
     is_sync = models.BooleanField(default=True)
     is_post = models.BooleanField(default=False, help_text="Whether this endpoint should use POST method")
+    is_jwt = models.BooleanField(default=False, help_text="Whether this endpoint requires JWT authentication")
     address = models.CharField(max_length=200, blank=True, null=True, help_text="Resource address for grouping channels (e.g., 'invoices', 'user')")
     endpoint = models.CharField(max_length=200, blank=True, null=True)
     description = models.TextField(max_length=500, blank=True, null=True)
