@@ -2,6 +2,7 @@ from django.contrib import admin
 from django.urls import reverse
 from django.utils.safestring import mark_safe
 from django.db import connection
+from django.db.models import Q
 from django.db.utils import OperationalError
 from nested_admin.nested import NestedStackedInline, NestedModelAdmin, NestedTabularInline
 
@@ -116,8 +117,25 @@ class DomainAdmin(admin.ModelAdmin):
     inlines = [EventInline, ]
 
 
+class PayloadDomainFilter(admin.SimpleListFilter):
+    title = "Domain"
+    parameter_name = "domain"
+    
+    def lookups(self, request, model_admin):
+        return Domain.objects.order_by("name").values_list("id", "name")
+    
+    def queryset(self, request, queryset):
+        if not self.value():
+            return queryset
+        return queryset.filter(
+            Q(event__domain_id=self.value())
+            | Q(response_of_event__domain_id=self.value())
+        ).distinct()
+
+
 class PayloadAdmin(admin.ModelAdmin):
     list_display = ["name", "domain_list"]
+    list_filter = [PayloadDomainFilter]
     inlines = [FieldInline, ]
     # list_filter = ["grpc_request_payload", "grpc_response_payload"]
     
