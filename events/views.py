@@ -508,7 +508,7 @@ def generate_full_yaml(request, service_id):
             field_property = {}
             x_type_override = getattr(field.type, 'x_type', None)
             resolved_schema_ref = field.schema_ref
-            if not resolved_schema_ref and field.type.custom_type and field.type.type == 'object':
+            if not resolved_schema_ref and field.type.type == 'object':
                 schema_def = field.type.get_schema_definition()
                 if schema_def:
                     resolved_schema_ref = "#/components/schemas/{0}".format(field.type.name)
@@ -548,9 +548,8 @@ def generate_full_yaml(request, service_id):
                     elif field.array_items_ref:
                         field_property['items'] = {'$ref': field.array_items_ref}
                 
-                # Handle schema reference
-                if resolved_schema_ref:
-                    field_property = {'$ref': resolved_schema_ref}
+            if resolved_schema_ref:
+                field_property = {'$ref': resolved_schema_ref}
             
             # Add description if field has one (but not if field_property is a $ref)
             if field.description and '$ref' not in field_property:
