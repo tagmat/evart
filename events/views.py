@@ -348,8 +348,12 @@ def generate_full_yaml(request, service_id):
             channel_name: {'$ref': "#/components/messages/{0}".format(channel_name)}
         }
         
-        # Note: We don't add Response messages to main channels anymore
-        # Response channels are exported as separate channels if they exist as separate events
+        # Include response message reference for sync (RESTful) channels
+        if event.is_sync and event.response_payload and not event.name.endswith('_response'):
+            response_message_name = event.response_payload.name
+            messages_dict[response_message_name] = {
+                '$ref': "#/components/messages/{0}".format(response_message_name)
+            }
 
         # Build channel configuration with proper property ordering
         channel_config = {
@@ -460,30 +464,24 @@ def generate_full_yaml(request, service_id):
             }
         }
 
-        # Create response message for sync operations only if there's no separate Response channel event
-        # Check if a separate Response channel event exists
+        # Create response message for sync operations using the event's defined response payload
+        # Only if there's no separate Response channel event (same payload exposed as its own channel)
         if event.is_sync and event.response_payload and not event.name.endswith('_response'):
-            response_channel_name = channel_name + "Response"
-            # Check if a separate Response channel event exists
+            response_message_name = event.response_payload.name
             response_event_exists = service.consumes.filter(name=event.name + '_response').exists() or \
                                    service.publishes.filter(name=event.name + '_response').exists()
             
-            # Only create response message if there's no separate Response channel
             if not response_event_exists:
-                # Create proper response title formatting with spacing
-                # Generate response title from channel name with proper spacing
-                response_title = ' '.join(word.capitalize() for word in re.findall(r'[A-Z][a-z]*', response_channel_name))
-                
-                # Generate response summary based on the original event description
+                response_title = ' '.join(word.capitalize() for word in re.findall(r'[A-Z][a-z]*', response_message_name))
                 response_summary = f"Response with {event.description.lower()}" if event.description else f"{event.name.replace('_', ' ').title()} response"
                 
-                configuration['components']['messages'][response_channel_name] = {
-                    'name': response_channel_name,
+                configuration['components']['messages'][response_message_name] = {
+                    'name': response_message_name,
                     'title': response_title,
                     'summary': response_summary,
                     'contentType': 'application/json',
                     'payload': {
-                        '$ref': "#/components/schemas/{0}Payload".format(response_channel_name)
+                        '$ref': "#/components/schemas/{0}Payload".format(response_message_name)
                     }
                 }
 
