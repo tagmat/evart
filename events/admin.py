@@ -160,6 +160,24 @@ class PayloadAdmin(admin.ModelAdmin):
         return ", ".join(sorted(domains))
 
 
+class FieldTypeAdmin(admin.ModelAdmin):
+    list_display = ["name", "type", "x_type", "custom_type", "format", "max_length"]
+    list_filter = ["custom_type", "type", "format"]
+    search_fields = ["name", "type", "x_type"]
+    fields = [
+        "project",
+        "name",
+        "type",
+        "x_type",
+        "custom_type",
+        "enum_choices",
+        "format",
+        "max_length",
+        "protobuf_type",
+        "schema_definition",
+    ]
+
+
 class DatabasePayloadAdmin(admin.ModelAdmin):
     list_display = ["name", "service", "project"]
     list_filter = ["service", "project"]
@@ -301,7 +319,7 @@ admin.site.register(Event, EventAdmin)
 admin.site.register(Domain, DomainAdmin)
 admin.site.register(Payload, PayloadAdmin)
 admin.site.register(Field)
-admin.site.register(FieldType)
+admin.site.register(FieldType, FieldTypeAdmin)
 admin.site.register(Service, ServiceAdmin)
 admin.site.register(Project, ProjectAdmin)
 admin.site.register(EventType)

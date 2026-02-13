@@ -506,6 +506,7 @@ def generate_full_yaml(request, service_id):
         
         for field in payload.field_set.all():
             field_property = {}
+            x_type_override = getattr(field.type, 'x_type', None)
             
             if field.type.custom_type:
                 if field.type.enum_choices is not None:
@@ -513,7 +514,7 @@ def generate_full_yaml(request, service_id):
                     field_property = {
                         'type': 'string',
                         'enum': enum_choices,
-                        'x-type': 'string'
+                        'x-type': x_type_override if x_type_override else 'string'
                     }
                     # Don't create separate enum schemas - enums should be inline in properties
                     # Only create enum schema if it's referenced elsewhere (via $ref)
@@ -521,14 +522,14 @@ def generate_full_yaml(request, service_id):
                 else:
                     field_property = {
                         'type': field.type.type,
-                        'x-type': field.type.type
+                        'x-type': x_type_override if x_type_override else field.type.type
                     }
                     if field.type.max_length and field.type.max_length > 0:
                         field_property['maxLength'] = field.type.max_length
             else:
                 field_property = {
                     'type': field.type.type,
-                    'x-type': field.type.type
+                    'x-type': x_type_override if x_type_override else field.type.type
                 }
                 if field.type.format:
                     field_property['format'] = field.type.format

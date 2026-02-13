@@ -144,6 +144,7 @@ class FieldType(models.Model):
     enum_choices = models.CharField(max_length=1000, null=True, blank=True)
     max_length = models.IntegerField(null=True, blank=True)
     type = models.CharField(max_length=200, default='string')
+    x_type = models.CharField(max_length=200, blank=True, null=True, help_text="Override for x-type in YAML")
     protobuf_type = models.CharField(max_length=200, default='string')
     format = models.CharField(max_length=200, blank=True, null=True)
     schema_definition = models.TextField(blank=True, null=True, help_text="Full JSON schema definition for complex object types")
