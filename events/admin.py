@@ -34,9 +34,16 @@ def service_column_exists():
         return False
 
 
+class DbOperationInline(admin.StackedInline):
+    model = DbOperation
+    extra = 0
+    can_delete = True
+
+
 class EventAdmin(admin.ModelAdmin):
-    list_display = ["name", "type", "domain", "payload", "response_payload", "is_sync", "is_post", "is_jwt", "address"]
-    list_filter = ["domain", "type", "payload", "response_payload", "is_sync", "is_post", "is_jwt", "address"]
+    list_display = ["name", "type", "domain", "payload", "response_payload", "is_sync", "http_method", "is_jwt", "address"]
+    list_filter = ["domain", "type", "payload", "response_payload", "is_sync", "http_method", "is_jwt", "address"]
+    inlines = [DbOperationInline]
 
 
 class EventInline(admin.TabularInline):
@@ -72,18 +79,60 @@ class PublishesInline(NestedStackedInline):
     # inlines = [EventInline, ]
 
 
+class HTTPClientFieldInline(admin.TabularInline):
+    model = HTTPClientField
+    extra = 1
+    fields = ['name']
+
+
+class HTTPClientInline(admin.TabularInline):
+    model = HTTPClient
+    extra = 0
+    fields = ['name']
+    show_change_link = True
+
+
+class GRPCMethodInline(admin.TabularInline):
+    model = GRPCMethod
+    extra = 0
+    fields = ['name', 'request', 'response', 'input_field', 'output_field']
+
+
+class GRPCClientInline(admin.TabularInline):
+    model = GRPCClient
+    extra = 0
+    fields = ['name', 'module', 'proto_service']
+    show_change_link = True
+
+
 class FieldInline(admin.TabularInline):
     model = Field
 
 
 class DatabaseFieldInline(admin.TabularInline):
     model = DatabaseField
+    fields = [
+        'name', 'type', 'description', 'required',
+        'x_type', 'x_type_override', 'x_size',
+        'x_unique', 'x_unique_index', 'x_index', 'x_not_null', 'x_nullable',
+        'x_check', 'x_column', 'x_comment', 'x_serializer',
+        'x_ignore', 'x_precision', 'x_scale',
+        'x_auto_create_time', 'x_auto_update_time', 'x_auto_increment',
+        'default_value',
+        'x_relation_schema_id', 'x_foreign_key', 'x_references',
+        'x_cascade_update', 'x_cascade_delete',
+        'x_many_to_many', 'x_join_table', 'x_join_foreign_key', 'x_join_references',
+        'x_association_autocreate', 'x_association_autoupdate', 'x_association_save_reference',
+        'x_embedded', 'x_embedded_prefix',
+        'x_polymorphic', 'x_polymorphic_value', 'x_association_foreign_key', 'x_constraint',
+        'x_preload', 'x_primary_key',
+    ]
 
 
 class DatabasePayloadInline(NestedTabularInline):
     model = DatabasePayload
     extra = 0
-    fields = ['name', 'service', 'create_rest', 'x_parser_schema_id', 'x_derives_from']
+    fields = ['name', 'service', 'description', 'create_rest', 'x_parser_schema_id', 'x_derives_from']
     readonly_fields = ['service']  # Service is automatically set to parent Service, show as read-only
     show_change_link = True
     
@@ -213,8 +262,13 @@ class ServiceAdmin(NestedModelAdmin):
                     # "download_proto_url"
                     ]
     # inlines = [GrpcPackageInline, ]
-    inlines = [DatabasePayloadInline]
+    inlines = [DatabasePayloadInline, HTTPClientInline, GRPCClientInline]
     filter_horizontal = ["consumes", "publishes", "database_payloads"]
+    fields = [
+        "project", "name", "slug_name", "asyncapi_version", "version",
+        "description", "original_title", "x_general_name", "x_service_name", "x_service_ip", "x_transport",
+        "consumes", "publishes", "database_payloads",
+    ]
     
     class Media:
         js = ("events/admin/service_copy_paste.js",)
@@ -325,5 +379,14 @@ admin.site.register(Project, ProjectAdmin)
 admin.site.register(EventType)
 admin.site.register(DatabasePayload, DatabasePayloadAdmin)
 admin.site.register(DatabaseField)
+class GRPCClientAdmin(admin.ModelAdmin):
+    list_display = ["name", "service", "module", "proto_service"]
+    inlines = [GRPCMethodInline]
+
+
+admin.site.register(HTTPClient)
+admin.site.register(GRPCClient, GRPCClientAdmin)
+admin.site.register(GRPCMethod)
+admin.site.register(DbOperation)
 # admin.site.register(GrpcPackage, GrpcPackageAdmin)
 # admin.site.register(GrpcService)
