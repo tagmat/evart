@@ -21,13 +21,14 @@ logger = logging.getLogger(__name__)
 def create_or_get_field_type(project, field_data, created_field_types):
     """Helper function to create or get field type with comprehensive handling"""
     try:
-        field_type_name = field_data.get('type', 'string')
-        
+        raw_type = field_data.get('type', 'string')
+        x_type = field_data.get('x-type')
+
         # Handle enum types
         if 'enum' in field_data:
-            enum_choices = ','.join(field_data.get('enum', []))
+            enum_choices = ','.join(str(v) for v in field_data.get('enum', []))
             # Create a unique name for enum types
-            enum_type_name = f"{field_type_name}_enum_{hash(enum_choices) % 10000}"
+            enum_type_name = f"{raw_type}_enum_{hash(enum_choices) % 10000}"
             field_type = _safe_get_or_create_field_type(
                 project=project,
                 name=enum_type_name,
@@ -41,26 +42,32 @@ def create_or_get_field_type(project, field_data, created_field_types):
                 created_field_types=created_field_types
             )
         else:
-            # Handle regular field types - create unique types for different formats
             format_value = field_data.get('format')
-            if format_value:
-                # Create a unique name for field types with formats
-                field_type_name_with_format = f"{field_type_name}_{format_value}"
+            # Use x-type as FieldType name when present — enables round-trip for int64, uuid, etc.
+            if x_type and x_type != raw_type:
+                ft_name = x_type
+            elif format_value:
+                ft_name = f"{raw_type}_{format_value}"
             else:
-                field_type_name_with_format = field_type_name
-            
+                ft_name = raw_type
+
             field_type = _safe_get_or_create_field_type(
                 project=project,
-                name=field_type_name_with_format,
+                name=ft_name,
                 defaults={
-                    'type': field_type_name,
+                    'type': raw_type,
+                    'x_type': x_type,
                     'custom_type': False,
                     'format': format_value,
                     'max_length': field_data.get('maxLength')
                 },
                 created_field_types=created_field_types
             )
-        
+            # Update x_type on existing record if it wasn't stored before
+            if field_type and x_type and not field_type.x_type:
+                field_type.x_type = x_type
+                field_type.save(update_fields=['x_type'])
+
         return field_type
     except Exception as e:
         # Log error but return a default field type to prevent blocking the import
@@ -304,356 +311,364 @@ def find_matching_payload(project, payload_name, schema_data, schemas):
 def generate_full_yaml(request, service_id):
     service = Service.objects.get(id=service_id)
 
-    configuration = {
-        'asyncapi': service.asyncapi_version,
-        'info': {
-            'title': service.original_title if service.original_title else "{0} V2 {1} Service".format(service.project.name, service.name),
-            'version': service.version,
-            'description': service.description if service.description is not None else "N/A",
-            'x-general-name': service.x_general_name if service.x_general_name else service.name.lower(),
-            'x-service-name': service.x_service_name if service.x_service_name else service.kebab_name(),
-            'x-service-ip': "change-this"
-        },
-        'servers': {
-            'test':
-                {
-                    'host': "127.0.0.1:9092",
-                    'protocol': "kafka-secure",
-                    "description": "Test broker",
-                }
-        },
-        'channels': {},
-        'operations': {},
-        'components': {
-            'messages': {},
-            'schemas': {},
-        }
-    }
+    # ── helpers ──────────────────────────────────────────────────────────────
+    general_name = service.x_general_name if service.x_general_name else service.name.lower()
+    # Channel key prefix: first letter uppercased, rest as-is (e.g. "station" → "Station")
+    pascal_general = general_name[0].upper() + general_name[1:]
 
-    for event in service.consumes.all().union(service.publishes.all()):
-        # Convert snake_case to PascalCase for channel names
-        # Special handling for ID -> Id
-        channel_name = ''.join(word.upper() if word.upper() in ['OTP', 'API', 'URL'] else word.capitalize() for word in event.name.split('_'))
-        # Fix ID to Id
-        channel_name = channel_name.replace('ID', 'Id')
-        # Convert snake_case to camelCase for address
-        address_name = ''.join(word.upper() if word.upper() in ['OTP', 'API', 'ID', 'URL'] else word.capitalize() for word in event.name.split('_'))
-        
-        # Use stored description and summary, fallback to generated ones
-        description = event.description if event.description else event.name.replace('_', ' ').title()
-        summary = event.summary if event.summary else f"{description} for web and mobile"
-        
-        # Build messages dictionary
-        messages_dict = {
-            channel_name: {'$ref': "#/components/messages/{0}".format(channel_name)}
-        }
-        
-        # Include response message reference for sync (RESTful) channels
-        if event.is_sync and event.response_payload and not event.name.endswith('_response'):
-            response_message_name = event.response_payload.name
-            messages_dict[response_message_name] = {
-                '$ref': "#/components/messages/{0}".format(response_message_name)
-            }
+    def to_pascal(snake: str) -> str:
+        """snake_case → PascalCase with special-word handling and ID→Id fix."""
+        result = ''.join(
+            w.upper() if w.upper() in ('OTP', 'API', 'URL') else w.capitalize()
+            for w in snake.split('_')
+        )
+        return result.replace('ID', 'Id')
 
-        # Build channel configuration with proper property ordering
-        channel_config = {
-            'description': description,
-            'x-is-sync': event.is_sync
-        }
-                
-        # Add x-is-post before address for sync events
-        if event.is_sync:
-            channel_config['x-is-post'] = event.is_post
-            
-        channel_config['address'] = event.address if event.address else address_name[0].lower() + address_name[1:]
-        channel_config['summary'] = summary
-            
-        # Add messages last to match expected format
-        channel_config['messages'] = messages_dict
-            
-        configuration['channels'][channel_name] = channel_config
+    def to_camel(snake: str) -> str:
+        """snake_case → camelCase."""
+        pascal = to_pascal(snake)
+        return pascal[0].lower() + pascal[1:]
 
-        # Create operations with simple names and direct message references
-        # For Response channels, create operations if:
-        # 1. Base event is a receive (command) - most common case
-        # 2. Special bidirectional cases: certificateSignedResponse, dataTransferResponse (base is send but Response has operation)
-        # Notification responses (base is send) don't have operations except for special cases
-        is_response_channel = event.name.endswith('_response')
-        should_create_operation = True
-        
-        if is_response_channel:
-            # Find the base event name (without _response)
-            base_event_name = event.name.replace('_response', '')
-            # Check if base event exists
-            try:
-                base_event = Event.objects.get(domain=event.domain, name=base_event_name)
-                # Special bidirectional cases that have operations even though base is send
-                special_cases = ['certificate_signed', 'data_transfer']
-                is_special_case = base_event_name in special_cases
-                
-                # Create operation if:
-                # - Base event is a command (in consumes), OR
-                # - It's a special bidirectional case (certificateSignedResponse, dataTransferResponse)
-                should_create_operation = (base_event in service.consumes.all()) or \
-                                         (is_special_case and event in service.publishes.all() and base_event in service.publishes.all())
-            except Event.DoesNotExist:
-                # Base event doesn't exist, don't create operation
-                should_create_operation = False
-        
-        if should_create_operation:
-            # Convert channel name to camelCase for operation name
-            base_operation_name = channel_name[0].lower() + channel_name[1:]
-            
-            # Add proper prefixes based on operation type
-            if channel_name.startswith('Create'):
-                operation_name = base_operation_name
-            elif channel_name.startswith('Get'):
-                operation_name = base_operation_name
-            elif channel_name.startswith('Update'):
-                operation_name = base_operation_name
-            elif channel_name.startswith('Delete'):
-                operation_name = base_operation_name
-            elif channel_name.startswith('User'):
-                operation_name = 'create' + channel_name
-            else:
-                operation_name = base_operation_name
-            
-            # Use stored endpoint or generate default
-            endpoint = event.endpoint if event.endpoint else "/{0}".format(channel_name)
-            
-            # Determine action based on service relationship
-            # If event is in consumes, it's a receive operation
-            # If event is in publishes, it's a send operation
-            # If in both, default to receive
-            if event in service.consumes.all():
-                action = 'receive'
-            elif event in service.publishes.all():
-                action = 'send'
-            else:
-                # Default to receive if somehow not in either (shouldn't happen)
-                action = 'receive'
-            
-            operation_config = {
-                'action': action,
-                'channel': {
-                    '$ref': "#/channels/{0}".format(channel_name)
-                },
-                'messages': [
-                    {'$ref': "#/channels/{0}/messages/{0}".format(channel_name)}
-                ],
-                'x-operation-name': channel_name,
-                'x-endpoint': endpoint
-            }
-            
-            if event.is_sync:
-                operation_config['x-jwt'] = event.is_jwt
-            
-            configuration['operations'][operation_name] = operation_config
+    def channel_key(event) -> str:
+        """'{PascalGeneralName}.{camelEventName}' — e.g. 'Station.bootNotificationReceived'."""
+        return f"{pascal_general}.{to_camel(event.name)}"
 
-        # Create message components
-        # Generate proper title from channel name with spacing
-        title = ' '.join(word.capitalize() for word in re.findall(r'[A-Z][a-z]*', channel_name))
-        
-        configuration['components']['messages'][channel_name] = {
-            'name': channel_name,
-            'title': title,
-            'summary': event.summary if event.summary else event.name.replace('_', ' ').title(),
-            'contentType': 'application/json',
-            'payload': {
-                '$ref': "#/components/schemas/{0}Payload".format(channel_name)
-            }
-        }
-
-        # Create response message for sync operations using the event's defined response payload
-        # Only if there's no separate Response channel event (same payload exposed as its own channel)
-        if event.is_sync and event.response_payload and not event.name.endswith('_response'):
-            response_message_name = event.response_payload.name
-            response_event_exists = service.consumes.filter(name=event.name + '_response').exists() or \
-                                   service.publishes.filter(name=event.name + '_response').exists()
-            
-            if not response_event_exists:
-                response_title = ' '.join(word.capitalize() for word in re.findall(r'[A-Z][a-z]*', response_message_name))
-                response_summary = f"Response with {event.description.lower()}" if event.description else f"{event.name.replace('_', ' ').title()} response"
-                
-                configuration['components']['messages'][response_message_name] = {
-                    'name': response_message_name,
-                    'title': response_title,
-                    'summary': response_summary,
-                    'contentType': 'application/json',
-                    'payload': {
-                        '$ref': "#/components/schemas/{0}Payload".format(response_message_name)
-                    }
-                }
-
-
-    # Collect all payloads used by this service's events
-    service_payloads = set()
-    for event in service.consumes.all().union(service.publishes.all()):
-        if event.payload:
-            service_payloads.add(event.payload)
-        if event.response_payload:
-            service_payloads.add(event.response_payload)
-    
-    # Also collect payloads from database payloads (if any are referenced in schemas)
-    # Database payloads are already filtered by service, so we don't need to add them here
-    
-    # Create payload schemas - only for payloads used by this service
-    for payload in service_payloads:
-        # First, collect data properties to determine if Data_* schema will be empty
-        data_schema_name = "Data_{0}Payload".format(payload.name)
-        data_properties = {}
+    def build_field_properties(field_set):
+        """Build a (properties_dict, required_list) from a queryset of Field objects."""
+        properties = {}
         required_fields = []
-        
-        for field in payload.field_set.all():
-            field_property = {}
+        for field in field_set:
             x_type_override = getattr(field.type, 'x_type', None)
             resolved_schema_ref = field.schema_ref
             if not resolved_schema_ref and field.type.type == 'object':
                 schema_def = field.type.get_schema_definition()
                 if schema_def:
                     resolved_schema_ref = "#/components/schemas/{0}".format(field.type.name)
-            
+
             if field.type.custom_type:
                 if field.type.enum_choices is not None:
                     enum_choices = field.type.enum_choices.replace(" ", "").split(",")
-                    field_property = {
-                        'type': 'string',
-                        'enum': enum_choices,
-                        'x-type': x_type_override if x_type_override else 'string'
-                    }
-                    # Don't create separate enum schemas - enums should be inline in properties
-                    # Only create enum schema if it's referenced elsewhere (via $ref)
-                    # For now, keep enums inline to match original YAML format
+                    field_property = {'type': 'string', 'enum': enum_choices}
+                    if x_type_override:
+                        field_property['x-type'] = x_type_override
                 else:
-                    field_property = {
-                        'type': field.type.type,
-                        'x-type': x_type_override if x_type_override else field.type.type
-                    }
+                    field_property = {'type': field.type.type}
+                    if x_type_override:
+                        field_property['x-type'] = x_type_override
                     if field.type.max_length and field.type.max_length > 0:
                         field_property['maxLength'] = field.type.max_length
             else:
-                field_property = {
-                    'type': field.type.type,
-                    'x-type': x_type_override if x_type_override else field.type.type
-                }
+                field_property = {'type': field.type.type}
                 if field.type.format:
                     field_property['format'] = field.type.format
+                if x_type_override:
+                    field_property['x-type'] = x_type_override
                 if field.type.max_length and field.type.max_length > 0:
                     field_property['maxLength'] = field.type.max_length
-                
-                # Handle array items
                 if field.type.type == 'array':
                     if field.array_items_type:
                         field_property['items'] = {'type': field.array_items_type}
                     elif field.array_items_ref:
                         field_property['items'] = {'$ref': field.array_items_ref}
-                
+
             if resolved_schema_ref:
                 field_property = {'$ref': resolved_schema_ref}
-            
-            # Add description if field has one (but not if field_property is a $ref)
+
             if field.description and '$ref' not in field_property:
                 field_property['description'] = field.description
 
-            data_properties[field.name] = field_property
-            
+            properties[field.name] = field_property
             if field.required:
                 required_fields.append(field.name)
+        return properties, required_fields
 
-        # Create main payload schema
-        payload_schema_name = "{0}Payload".format(payload.name)
-        
-        # Determine if this is a Response payload and what type
-        is_response_payload = payload.name.endswith('Response')
-        is_notification_response = is_response_payload and any(
-            keyword in payload.name for keyword in ['Notification', 'StatusNotification']
-        )
-        
-        # Determine data property handling:
-        # 1. Empty Data_* for notification Response payloads → separate empty schema with $ref
-        # 2. Empty Data_* for other payloads → inline empty object
-        # 3. Non-empty Data_* for certain Response payloads → inline data (if it's a command response with simple structure)
-        # 4. Non-empty Data_* for others → separate schema with $ref
-        
-        # Response payloads that should use inline data (command responses with simple structure)
-        inline_response_payloads = [
-            'CustomerInformationResponse', 'GetDisplayMessagesResponse', 
-            'GetInstalledCertificateIdsResponse', 'GetMonitoringReportResponse',
-            'GetReportResponse', 'GetTransactionStatusResponse'
+    # ── base structure ────────────────────────────────────────────────────────
+    info = {
+        'title': service.original_title if service.original_title else "{0} V2 {1} Service".format(service.project.name, service.name),
+        'version': service.version,
+        'description': service.description if service.description is not None else "N/A",
+        'x-general-name': general_name,
+        'x-service-name': service.x_service_name if service.x_service_name else service.kebab_name(),
+        'x-service-ip': service.x_service_ip if service.x_service_ip else "change-this",
+    }
+    if service.x_transport:
+        info['x-transport'] = service.x_transport
+    http_clients = list(service.http_clients.prefetch_related('fields').all())
+    if http_clients:
+        info['x-http-clients'] = [
+            {'name': c.name, 'fields': [{'name': f.name} for f in c.fields.all()]}
+            for c in http_clients
         ]
-        should_use_inline = payload.name in inline_response_payloads and data_properties
-        
-        if should_use_inline:
-            # Use inline data object for these specific Response payloads
-            data_property = {
-                'type': 'object',
-                'properties': data_properties
+    grpc_clients = list(service.grpc_clients.prefetch_related('methods').all())
+    if grpc_clients:
+        gc_list = []
+        for c in grpc_clients:
+            gc_item = {'name': c.name}
+            if c.module:
+                gc_item['module'] = c.module
+            if c.proto_service:
+                gc_item['service'] = c.proto_service
+            methods = list(c.methods.all())
+            if methods:
+                gc_item['methods'] = []
+                for m in methods:
+                    method_item = {'name': m.name, 'request': m.request, 'response': m.response}
+                    if m.input_field:
+                        method_item['input_field'] = m.input_field
+                    if m.output_field:
+                        method_item['output_field'] = m.output_field
+                    gc_item['methods'].append(method_item)
+            gc_list.append(gc_item)
+        info['x-grpc-clients'] = gc_list
+
+    configuration = {
+        'asyncapi': service.asyncapi_version,
+        'info': info,
+        'servers': {
+            'kafka': {
+                'host': "127.0.0.1:9092",
+                'protocol': "kafka-secure",
+                'description': "Test broker",
             }
-            if required_fields:
-                data_property['required'] = required_fields
-        elif data_properties:
-            # Data_* schema has properties, use reference
-            data_property = {
-                '$ref': "#/components/schemas/{0}".format(data_schema_name)
-            }
-        elif is_notification_response:
-            # Empty Data_* for notification Response payloads → separate empty schema with $ref
-            data_property = {
-                '$ref': "#/components/schemas/{0}".format(data_schema_name)
-            }
-        else:
-            # Empty Data_* for other payloads → inline empty object
-            data_property = {
-                'type': 'object',
-                'properties': {}
-            }
-        
-        configuration['components']['schemas'][payload_schema_name] = {
-            'type': 'object',
-            'properties': {
-                'fromService': {
-                    'type': 'string',
-                    'default': '',
-                    'x-parser-schema-id': 'fromService'
-                },
-                'sentAt': {
-                    'type': 'string',
-                    'format': 'date-time',
-                    'default': '2025-01-01T00:00:00Z',
-                    'x-parser-schema-id': 'sentAt'
-                },
-                'timeToLive': {
-                    'type': 'integer',
-                    'default': 3600000,
-                    'x-parser-schema-id': 'timeToLive'
-                },
-                'data': data_property
-            }
+        },
+        'channels': {},
+        'operations': {},
+        'components': {
+            'messages': {},
+            'schemas': {},
+        },
+    }
+
+    # Pre-fetch consumes/publishes sets for efficient membership checks
+    consumes_ids = set(service.consumes.values_list('id', flat=True))
+    publishes_ids = set(service.publishes.values_list('id', flat=True))
+
+    # ── channels + operations + messages ─────────────────────────────────────
+    for event in service.consumes.all().union(service.publishes.all()):
+        pascal_event = to_pascal(event.name)
+        ch_key = channel_key(event)
+
+        description = event.description if event.description else event.name.replace('_', ' ').title()
+        summary = event.summary if event.summary else description
+
+        # ── channel config ────────────────────────────────────────────────
+        channel_config = {
+            'description': description,
+            'x-is-sync': event.is_sync,
         }
 
-        # Create Data_* schema if:
-        # 1. It has properties and we're not using inline data, OR
-        # 2. It's empty but it's a notification Response payload (needs separate empty schema)
-        if (data_properties and not should_use_inline) or (not data_properties and is_notification_response):
-            schema_config = {
-                'type': 'object',
-                'properties': data_properties
-            }
-            
-            # Add description if payload has one
-            if payload.description:
-                schema_config['description'] = payload.description
-            
-            # Only add required if there are required fields
-            if required_fields:
-                schema_config['required'] = required_fields
-                
-            configuration['components']['schemas'][data_schema_name] = schema_config
+        if not event.is_sync:
+            # x-db-operation if linked
+            try:
+                op = event.db_operation
+                db_op = {
+                    'type': op.type,
+                    'schema': op.schema,
+                    'lookup-field': op.lookup_field,
+                }
+                if op.lookup_field_2:
+                    db_op['lookup-field-2'] = op.lookup_field_2
+                if op.status:
+                    db_op['status'] = op.status
+                if op.function_name:
+                    db_op['function-name'] = op.function_name
+                channel_config['x-db-operation'] = db_op
+            except DbOperation.DoesNotExist:
+                pass
 
-    # Don't create messages for orphaned payloads - standalone payloads are just schemas, not messages
-    # Messages are only created for payloads linked to events (channels)
-    # This matches the original YAML format where standalone payloads like GetVariablesAckPayload
-    # exist as schemas but don't have corresponding messages
+        channel_config['address'] = event.address if event.address else f"{general_name}.{to_camel(event.name)}"
+        channel_config['summary'] = summary
+
+        # ── messages in channel ───────────────────────────────────────────
+        if event.is_sync:
+            request_msg_name = f"{pascal_event}Request"
+            response_msg_name = f"{pascal_event}Response"
+            channel_config['messages'] = {
+                request_msg_name: {'$ref': f"#/components/messages/{request_msg_name}"},
+                response_msg_name: {'$ref': f"#/components/messages/{response_msg_name}"},
+            }
+            op_msg_ref = f"#/channels/{ch_key}/messages/{request_msg_name}"
+        else:
+            payload_msg_name = f"{event.payload.name}Payload" if event.payload else f"{pascal_event}Payload"
+            channel_config['messages'] = {
+                payload_msg_name: {'$ref': f"#/components/messages/{payload_msg_name}"},
+            }
+            op_msg_ref = f"#/channels/{ch_key}/messages/{payload_msg_name}"
+
+        configuration['channels'][ch_key] = channel_config
+
+        # ── operation ─────────────────────────────────────────────────────
+        is_response_channel = event.name.endswith('_response')
+        should_create_operation = True
+
+        if is_response_channel:
+            base_event_name = event.name[:-len('_response')]
+            try:
+                base_event = Event.objects.get(domain=event.domain, name=base_event_name)
+                special_cases = ('certificate_signed', 'data_transfer')
+                is_special = base_event_name in special_cases
+                should_create_operation = (
+                    (base_event.id in consumes_ids)
+                    or (is_special and event.id in publishes_ids and base_event.id in publishes_ids)
+                )
+            except Event.DoesNotExist:
+                should_create_operation = False
+
+        if should_create_operation:
+            action = 'receive' if event.id in consumes_ids else 'send'
+            operation_key_str = f"{action}{ch_key}"
+
+            operation_config = {
+                'action': action,
+                'channel': {'$ref': f"#/channels/{ch_key}"},
+                'messages': [{'$ref': op_msg_ref}],
+            }
+            if event.is_sync:
+                operation_config['x-operation-name'] = pascal_event
+                endpoint = event.endpoint if event.endpoint else f"/{to_camel(event.name)}"
+                operation_config['x-endpoint'] = endpoint
+                operation_config['x-http-method'] = event.http_method if event.http_method else 'post'
+                operation_config['x-jwt'] = event.is_jwt
+
+            configuration['operations'][operation_key_str] = operation_config
+
+        # ── message components ────────────────────────────────────────────
+        if event.is_sync:
+            # Request message
+            request_schema_name = f"{pascal_event}RequestBody"
+            configuration['components']['messages'][f"{pascal_event}Request"] = {
+                'name': f"{pascal_event}Request",
+                'contentType': 'application/json',
+                'payload': {'$ref': f"#/components/schemas/{request_schema_name}"},
+            }
+            # Response message
+            response_schema_name = f"{pascal_event}ResponseBody"
+            configuration['components']['messages'][f"{pascal_event}Response"] = {
+                'name': f"{pascal_event}Response",
+                'contentType': 'application/json',
+                'payload': {'$ref': f"#/components/schemas/{response_schema_name}"},
+            }
+        else:
+            payload_name = event.payload.name if event.payload else pascal_event
+            envelope_schema_name = f"{payload_name}Envelope"
+            msg_name = f"{payload_name}Payload"
+            if msg_name not in configuration['components']['messages']:
+                configuration['components']['messages'][msg_name] = {
+                    'name': msg_name,
+                    'contentType': 'application/json',
+                    'payload': {'$ref': f"#/components/schemas/{envelope_schema_name}"},
+                }
+
+    # ── collect all payloads used by this service's events ────────────────────
+    service_payloads = set()
+    sync_events_by_payload = {}   # payload → list of events (for request/response schema naming)
+    for event in service.consumes.all().union(service.publishes.all()):
+        if event.payload:
+            service_payloads.add(event.payload)
+            if event.is_sync:
+                sync_events_by_payload.setdefault(event.payload.id, []).append(event)
+        if event.response_payload:
+            service_payloads.add(event.response_payload)
+            if event.is_sync:
+                sync_events_by_payload.setdefault(event.response_payload.id, []).append(event)
+
+    # ── payload schemas ───────────────────────────────────────────────────────
+    # Track which payload names have already been written as async envelopes
+    written_envelope_names = set()
+
+    for event in service.consumes.all().union(service.publishes.all()):
+        pascal_event = to_pascal(event.name)
+
+        if event.is_sync:
+            # ── Sync: plain RequestBody + ResponseBody schemas ────────────
+            request_schema_name = f"{pascal_event}RequestBody"
+            response_schema_name = f"{pascal_event}ResponseBody"
+
+            if event.payload:
+                req_props, req_required = build_field_properties(event.payload.field_set.all())
+            else:
+                req_props, req_required = {}, []
+
+            req_schema = {'type': 'object', 'properties': req_props}
+            if req_required:
+                req_schema['required'] = req_required
+            if event.payload and event.payload.description:
+                req_schema['description'] = event.payload.description
+            # x-parser-schema-id: lowercase first char of schema name
+            req_schema['x-parser-schema-id'] = request_schema_name[0].lower() + request_schema_name[1:]
+            configuration['components']['schemas'][request_schema_name] = req_schema
+
+            if event.response_payload:
+                res_props, res_required = build_field_properties(event.response_payload.field_set.all())
+            else:
+                res_props, res_required = {}, []
+
+            res_schema = {'type': 'object', 'properties': res_props}
+            if res_required:
+                res_schema['required'] = res_required
+            if event.response_payload and event.response_payload.description:
+                res_schema['description'] = event.response_payload.description
+            res_schema['x-parser-schema-id'] = response_schema_name[0].lower() + response_schema_name[1:]
+            configuration['components']['schemas'][response_schema_name] = res_schema
+
+        else:
+            # ── Async: Envelope + Data_* schemas ─────────────────────────
+            if not event.payload:
+                continue
+            payload = event.payload
+            payload_name = payload.name
+            envelope_schema_name = f"{payload_name}Envelope"
+
+            if envelope_schema_name in written_envelope_names:
+                continue
+            written_envelope_names.add(envelope_schema_name)
+
+            camel_payload = payload_name[0].lower() + payload_name[1:]
+            data_schema_name = f"Data_{camel_payload}"
+
+            data_props, data_required = build_field_properties(payload.field_set.all())
+
+            if data_props:
+                data_property = {'$ref': f"#/components/schemas/{data_schema_name}"}
+            else:
+                data_property = {'type': 'object', 'properties': {}}
+
+            configuration['components']['schemas'][envelope_schema_name] = {
+                'type': 'object',
+                'properties': {
+                    'eventName': {
+                        'type': 'string',
+                        'default': payload_name,
+                    },
+                    'fromService': {
+                        'type': 'string',
+                        'default': '',
+                    },
+                    'sentAt': {
+                        'type': 'string',
+                        'format': 'date-time',
+                        'default': '2026-01-01T00:00:00Z',
+                    },
+                    'timeToLive': {
+                        'type': 'integer',
+                        'default': 3600000,
+                    },
+                    'data': data_property,
+                },
+                'x-parser-schema-id': f"{camel_payload}Envelope",
+            }
+
+            if data_props:
+                data_schema = {'type': 'object', 'properties': data_props}
+                if payload.description:
+                    data_schema['description'] = payload.description
+                if data_required:
+                    data_schema['required'] = data_required
+                data_schema['x-parser-schema-id'] = f"{camel_payload}Data"
+                configuration['components']['schemas'][data_schema_name] = data_schema
+
+    # ── DB_* schemas ──────────────────────────────────────────────────────────
+    DB_INT_PROPS = ['x_size', 'x_precision', 'x_scale']
 
     for dbpayload in DatabasePayload.objects.filter(service=service):
         properties = {}
@@ -662,13 +677,11 @@ def generate_full_yaml(request, service_id):
             if field.type.custom_type:
                 if field.type.enum_choices is not None:
                     enum_choices = field.type.enum_choices.replace(" ", "").split(",")
-                    # Use inline enum instead of separate schema to match original YAML format
                     properties[field.name] = {
                         'type': 'string',
                         'enum': enum_choices,
-                        'description': field.description or field.name
+                        'description': field.description or field.name,
                     }
-                    # Don't create separate enum schema - keep enums inline
                 else:
                     if field.type.type == "string":
                         properties[field.name] = {
@@ -676,94 +689,139 @@ def generate_full_yaml(request, service_id):
                         }
                         configuration['components']['schemas'][field.type.name] = {
                             'type': field.type.type,
-                            'x-parser-schema-id': field.type.name
+                            'x-parser-schema-id': field.type.name,
                         }
-                        if field.type.max_length > 0:
+                        if field.type.max_length and field.type.max_length > 0:
                             configuration['components']['schemas'][field.type.name]['maxLength'] = field.type.max_length
-
             else:
-                properties[field.name] = {
-                    'type': field.type.type
-                }
+                # Build prop in example-matching order:
+                # type → format → x-type → x-type-override → x-relation-schema-id →
+                # x-size/precision/scale → bool flags → x-default → x-check →
+                # x-column/comment/serializer → description →
+                # x-foreign-key/references/cascade → x-many-to-many/join props →
+                # x-association bools → x-embedded → x-polymorphic/constraint → items
+                prop = {'type': field.type.type}
 
-                # Add description if available
-                if field.description is not None:
-                    properties[field.name]['description'] = field.description
+                if field.type.format:
+                    prop['format'] = field.type.format
+                if field.x_type:
+                    prop['x-type'] = field.x_type
+                if field.x_type_override:
+                    prop['x-type-override'] = field.x_type_override
+                if field.x_primary_key:
+                    prop['x-primary-key'] = True
+                # x-relation-schema-id comes right after x-type (not after null/index props)
+                if field.x_relation_schema_id:
+                    prop['x-relation-schema-id'] = field.x_relation_schema_id
 
-                # Add format if available
-                if field.type.format is not None:
-                    properties[field.name]['format'] = field.type.format
-                    
-                # Add database-specific x- properties
-                if field.x_type is not None:
-                    properties[field.name]['x-type'] = field.x_type
-                    
-                if field.x_unique:
-                    properties[field.name]['x-unique'] = True
-                    
-                if field.x_index:
-                    properties[field.name]['x-index'] = True
-                    
+                # int props
+                for attr in DB_INT_PROPS:
+                    val = getattr(field, attr, None)
+                    if val is not None:
+                        prop[attr.replace('_', '-')] = val
+
+                # index/null/ignore/auto booleans (excludes association/embedded — those come later)
+                for attr in ['x_unique', 'x_unique_index', 'x_index', 'x_not_null', 'x_nullable',
+                             'x_ignore', 'x_auto_create_time', 'x_auto_update_time', 'x_auto_increment']:
+                    if getattr(field, attr, False):
+                        prop[attr.replace('_', '-')] = True
+
+                # x-default (before x-check)
                 if field.default_value is not None:
-                    properties[field.name]['default'] = field.default_value
-                    
-                if field.x_relation_schema_id is not None:
-                    properties[field.name]['x-relation-schema-id'] = field.x_relation_schema_id
+                    dv = field.default_value
+                    if isinstance(dv, str):
+                        if dv.lower() == 'true':
+                            dv = True
+                        elif dv.lower() == 'false':
+                            dv = False
+                    prop['x-default'] = dv
 
-        schema_config = {
-            'type': 'object'
-        }
-        
-        # Add x-parser-schema-id if available
-        if dbpayload.x_parser_schema_id:
-            schema_config['x-parser-schema-id'] = dbpayload.x_parser_schema_id
-        else:
-            schema_config['x-parser-schema-id'] = dbpayload.name
-            
-        # Add x-create-rest if available
-        if hasattr(dbpayload, 'create_rest'):
-            schema_config['x-create-rest'] = dbpayload.create_rest
-            
-        # Add x-derives-from if available
+                if field.x_check:
+                    prop['x-check'] = field.x_check
+                for attr in ['x_column', 'x_comment', 'x_serializer']:
+                    val = getattr(field, attr, None)
+                    if val:
+                        prop[attr.replace('_', '-')] = val
+
+                if field.description:
+                    prop['description'] = field.description
+
+                # relation props
+                for attr in ['x_foreign_key', 'x_references', 'x_cascade_update', 'x_cascade_delete']:
+                    val = getattr(field, attr, None)
+                    if val:
+                        prop[attr.replace('_', '-')] = val
+
+                # preload (after cascade props, before M2M and items)
+                if field.x_preload:
+                    prop['x-preload'] = True
+
+                # M2M props
+                for attr in ['x_many_to_many', 'x_join_table', 'x_join_foreign_key', 'x_join_references']:
+                    val = getattr(field, attr, None)
+                    if val:
+                        prop[attr.replace('_', '-')] = val
+
+                # association booleans (after join props, like in example)
+                for attr in ['x_association_autocreate', 'x_association_autoupdate', 'x_association_save_reference']:
+                    if getattr(field, attr, False):
+                        prop[attr.replace('_', '-')] = True
+
+                # embedded
+                if field.x_embedded:
+                    prop['x-embedded'] = True
+                if field.x_embedded_prefix:
+                    prop['x-embedded-prefix'] = field.x_embedded_prefix
+
+                # polymorphic / constraint
+                for attr in ['x_polymorphic', 'x_polymorphic_value', 'x_association_foreign_key', 'x_constraint']:
+                    val = getattr(field, attr, None)
+                    if val:
+                        prop[attr.replace('_', '-')] = val
+
+                # items for arrays (keyed by x-relation-schema-id already set above)
+                if field.type.type == 'array' and field.x_relation_schema_id:
+                    prop['items'] = {'$ref': f"#/components/schemas/{field.x_relation_schema_id}"}
+
+                properties[field.name] = prop
+
+        schema_config = {'type': 'object'}
+        if dbpayload.description:
+            schema_config['description'] = dbpayload.description
+        schema_config['x-parser-schema-id'] = dbpayload.x_parser_schema_id if dbpayload.x_parser_schema_id else dbpayload.name
+        schema_config['x-create-rest'] = dbpayload.create_rest
         if dbpayload.x_derives_from:
             schema_config['x-derives-from'] = dbpayload.x_derives_from
-            
-        # Add properties last
         schema_config['properties'] = properties
-            
-        configuration['components']['schemas']["{1}{0}".format(dbpayload.name, "DB_")] = schema_config
 
-    # Add aliases for DB payload parser schema IDs (e.g., User -> DB_User)
+        configuration['components']['schemas'][f"DB_{dbpayload.name}"] = schema_config
+
+    # Aliases for DB payload parser schema IDs (e.g., User → DB_User)
     for dbpayload in DatabasePayload.objects.filter(service=service):
         if dbpayload.x_parser_schema_id:
-            db_schema_key = "DB_{0}".format(dbpayload.name)
-            if db_schema_key in configuration['components']['schemas'] and \
-               dbpayload.x_parser_schema_id not in configuration['components']['schemas']:
+            db_schema_key = f"DB_{dbpayload.name}"
+            if (db_schema_key in configuration['components']['schemas']
+                    and dbpayload.x_parser_schema_id not in configuration['components']['schemas']):
                 configuration['components']['schemas'][dbpayload.x_parser_schema_id] = {
-                    '$ref': "#/components/schemas/{0}".format(db_schema_key)
+                    '$ref': f"#/components/schemas/{db_schema_key}"
                 }
 
-    # Collect all FieldTypes used by this service's payloads
+    # ── export complex FieldType object schemas ───────────────────────────────
     service_field_types = set()
     for payload in service_payloads:
         for field in payload.field_set.all():
             service_field_types.add(field.type)
-    
-    # Also collect FieldTypes from database payloads
     for dbpayload in DatabasePayload.objects.filter(service=service):
         for field in dbpayload.databasefield_set.all():
             service_field_types.add(field.type)
-    
-    # Export complex object FieldType schemas (type='object', custom_type=True)
-    # Only export FieldTypes that are actually used by this service
+
     for field_type in service_field_types:
         if field_type.type == 'object' and field_type.custom_type:
             schema_def = field_type.get_schema_definition()
             if schema_def:
-                # Use the stored schema definition as-is (don't add x-parser-schema-id)
                 configuration['components']['schemas'][field_type.name] = schema_def.copy()
 
-    # Include schemas referenced via $ref so exports stay complete
+    # ── resolve $ref schemas ──────────────────────────────────────────────────
     referenced_schema_names = set()
 
     def add_ref_schema_name(ref_value):
@@ -772,26 +830,24 @@ def generate_full_yaml(request, service_id):
             if schema_name:
                 referenced_schema_names.add(schema_name)
 
-    def collect_ref_schema_names(obj, names):
+    def collect_ref_schema_names(obj):
         if isinstance(obj, dict):
             ref_value = obj.get('$ref')
             if ref_value:
                 add_ref_schema_name(ref_value)
             for value in obj.values():
-                collect_ref_schema_names(value, names)
+                collect_ref_schema_names(value)
         elif isinstance(obj, list):
             for item in obj:
-                collect_ref_schema_names(item, names)
+                collect_ref_schema_names(item)
 
-    # Collect refs from payload field definitions
     for payload in service_payloads:
         for field in payload.field_set.all():
             add_ref_schema_name(field.schema_ref)
             add_ref_schema_name(field.array_items_ref)
 
-    # Collect refs from already-built schemas (e.g., nested refs)
     for schema_data in configuration['components']['schemas'].values():
-        collect_ref_schema_names(schema_data, referenced_schema_names)
+        collect_ref_schema_names(schema_data)
 
     field_type_cache = {}
 
@@ -810,14 +866,12 @@ def generate_full_yaml(request, service_id):
             schema_def = {'type': 'object'}
         else:
             schema_def = {'type': field_type.type}
-
         if field_type.format:
             schema_def['format'] = field_type.format
         if field_type.max_length and field_type.max_length > 0:
             schema_def['maxLength'] = field_type.max_length
         if field_type.enum_choices:
-            enum_choices = field_type.enum_choices.replace(" ", "").split(",")
-            schema_def['enum'] = enum_choices
+            schema_def['enum'] = field_type.enum_choices.replace(" ", "").split(",")
         return schema_def
 
     resolved_schema_names = set()
@@ -834,48 +888,44 @@ def generate_full_yaml(request, service_id):
             resolved_schema_names.add(schema_name)
             continue
         configuration['components']['schemas'][schema_name] = schema_def
-        collect_ref_schema_names(schema_def, referenced_schema_names)
+        collect_ref_schema_names(schema_def)
         resolved_schema_names.add(schema_name)
 
-    # Custom YAML representer to force double quotes for strings
+    # ── YAML serialisation ────────────────────────────────────────────────────
     class DoubleQuotedString(str):
         pass
-    
+
     def represent_double_quoted_string(dumper, data):
         return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='"')
-    
+
     yaml.add_representer(DoubleQuotedString, represent_double_quoted_string)
-    
-    # Custom YAML representer to force double quotes for endpoints
-    class DoubleQuotedEndpoint(str):
-        pass
 
-    def represent_double_quoted_endpoint(dumper, data):
-        return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='"')
+    # Use literal block scalar (|) for multi-line strings
+    def represent_str_literal(dumper, data):
+        if '\n' in data:
+            return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+        return dumper.represent_scalar('tag:yaml.org,2002:str', data)
 
-    yaml.add_representer(DoubleQuotedEndpoint, represent_double_quoted_endpoint)
-    
-    # Convert address strings and endpoints to double-quoted strings
-    def convert_addresses_to_double_quoted(obj, current_path=""):
+    yaml.add_representer(str, represent_str_literal)
+
+    def convert_to_double_quoted(obj, current_path=""):
         if isinstance(obj, dict):
             new_obj = {}
             for key, value in obj.items():
                 new_path = f"{current_path}.{key}" if current_path else key
-                if key == 'address' and current_path.startswith('channels.'):
-                    # Only convert channel addresses, not database field addresses
+                if key == 'x-endpoint':
                     new_obj[key] = DoubleQuotedString(value)
-                elif key == 'x-endpoint':
-                    new_obj[key] = DoubleQuotedEndpoint(value)
+                elif key == '$ref' and isinstance(value, str):
+                    new_obj[key] = DoubleQuotedString(value)
                 else:
-                    new_obj[key] = convert_addresses_to_double_quoted(value, new_path)
+                    new_obj[key] = convert_to_double_quoted(value, new_path)
             return new_obj
         elif isinstance(obj, list):
-            return [convert_addresses_to_double_quoted(item, current_path) for item in obj]
-        else:
-            return obj
-    
-    configuration_with_quotes = convert_addresses_to_double_quoted(configuration)
-    yaml_out = yaml.dump(configuration_with_quotes, sort_keys=False, default_flow_style=False)
+            return [convert_to_double_quoted(item, current_path) for item in obj]
+        return obj
+
+    configuration_with_quotes = convert_to_double_quoted(configuration)
+    yaml_out = yaml.dump(configuration_with_quotes, sort_keys=False, default_flow_style=False, allow_unicode=True)
 
     response = HttpResponse(yaml_out, content_type='application/x-yaml')
     response['Content-Disposition'] = 'attachment; filename={0}.yaml'.format(service.slug_name)
@@ -1733,7 +1783,9 @@ def _perform_import(yaml_data, request):
                 'description': info.get('description', 'Imported service'),
                 'original_title': original_title,
                 'x_general_name': info.get('x-general-name', ''),
-                'x_service_name': info.get('x-service-name', '')
+                'x_service_name': info.get('x-service-name', ''),
+                'x_transport': info.get('x-transport'),
+                'x_service_ip': info.get('x-service-ip')
             }
         )
     except Exception as e:
@@ -1744,7 +1796,54 @@ def _perform_import(yaml_data, request):
         service.x_general_name = info.get('x-general-name', '') or service.x_general_name
         service.x_service_name = info.get('x-service-name', '') or service.x_service_name
         service.original_title = original_title or service.original_title
+        service.x_transport = info.get('x-transport') or service.x_transport
+        service.x_service_ip = info.get('x-service-ip') or service.x_service_ip
         service.save()
+
+    # Import HTTP clients
+    for hc_data in info.get('x-http-clients', []):
+        hc_name = hc_data.get('name', '')
+        if not hc_name:
+            continue
+        try:
+            hc, _ = HTTPClient.objects.get_or_create(service=service, name=hc_name)
+            for f_data in hc_data.get('fields', []):
+                f_name = f_data.get('name', '')
+                if f_name:
+                    HTTPClientField.objects.get_or_create(client=hc, name=f_name)
+        except Exception as hc_error:
+            logger.warning(f"Failed to create HTTPClient {hc_name}: {str(hc_error)}")
+
+    # Import gRPC clients
+    for gc_data in info.get('x-grpc-clients', []):
+        gc_name = gc_data.get('name', '')
+        if not gc_name:
+            continue
+        try:
+            gc, _ = GRPCClient.objects.update_or_create(
+                service=service,
+                name=gc_name,
+                defaults={
+                    'module': gc_data.get('module'),
+                    'proto_service': gc_data.get('service'),
+                }
+            )
+            for method_data in gc_data.get('methods', []):
+                method_name = method_data.get('name', '')
+                if not method_name:
+                    continue
+                GRPCMethod.objects.update_or_create(
+                    client=gc,
+                    name=method_name,
+                    defaults={
+                        'request': method_data.get('request', ''),
+                        'response': method_data.get('response', ''),
+                        'input_field': method_data.get('input_field'),
+                        'output_field': method_data.get('output_field'),
+                    }
+                )
+        except Exception as gc_error:
+            logger.warning(f"Failed to create GRPCClient {gc_name}: {str(gc_error)}")
     
     # Create domain
     try:
@@ -1773,14 +1872,19 @@ def _perform_import(yaml_data, request):
     yaml_messages = yaml_data.get('components', {}).get('messages', {})
     schemas = yaml_data.get('components', {}).get('schemas', {})
     operation_jwt_by_channel = {}
-    
+    operation_http_method_by_channel = {}
+
     for op_data in operations.values():
         channel_ref = op_data.get('channel', {}).get('$ref', '')
-        if not channel_ref or 'x-jwt' not in op_data:
+        if not channel_ref:
             continue
-        channel_name = channel_ref.split('/')[-1]
-        if channel_name:
-            operation_jwt_by_channel[channel_name] = op_data.get('x-jwt')
+        ch_name = channel_ref.split('/')[-1]
+        if not ch_name:
+            continue
+        if 'x-jwt' in op_data:
+            operation_jwt_by_channel[ch_name] = op_data.get('x-jwt')
+        if 'x-http-method' in op_data:
+            operation_http_method_by_channel[ch_name] = op_data.get('x-http-method')
     
     created_events = []
     created_payloads = []
@@ -1878,6 +1982,12 @@ def _perform_import(yaml_data, request):
                 jwt_value = operation_jwt_by_channel.get(channel_name)
             if jwt_value is None:
                 jwt_value = False
+            # Resolve http_method: new format has it on operations; old format had x-is-post on channels
+            http_method = operation_http_method_by_channel.get(channel_name)
+            if http_method is None:
+                is_post_legacy = channel_data.get('x-is-post')
+                if is_post_legacy is not None:
+                    http_method = 'post' if is_post_legacy else 'get'
             try:
                 event, created = _safe_get_or_create(
                     Event,
@@ -1889,7 +1999,7 @@ def _perform_import(yaml_data, request):
                         'payload': request_payload,
                         'response_payload': response_payload,
                         'is_sync': channel_data.get('x-is-sync', True),
-                        'is_post': channel_data.get('x-is-post', False),
+                        'http_method': http_method,
                         'is_jwt': jwt_value,
                         'address': channel_data.get('address'),
                         'endpoint': f"/{channel_name}",
@@ -1900,20 +2010,38 @@ def _perform_import(yaml_data, request):
             except Exception as event_error:
                 logger.warning(f"Failed to create Event {event_snake_name}: {str(event_error)}")
                 continue
-            
+
             # Update existing event with new data if not created
             if not created:
                 event.payload = request_payload
                 event.response_payload = response_payload
                 event.is_sync = channel_data.get('x-is-sync', True)
-                event.is_post = channel_data.get('x-is-post', False)
+                event.http_method = http_method or event.http_method
                 event.is_jwt = jwt_value
                 event.address = channel_data.get('address')
                 event.endpoint = f"/{channel_name}"
                 event.description = channel_data.get('description', '')
                 event.summary = channel_data.get('summary', '')
                 event.save()
-            
+
+            # Import x-db-operation for async channels
+            db_op_data = channel_data.get('x-db-operation')
+            if db_op_data and not event.is_sync:
+                try:
+                    DbOperation.objects.update_or_create(
+                        event=event,
+                        defaults={
+                            'type': db_op_data.get('type', 'block'),
+                            'schema': db_op_data.get('schema', ''),
+                            'lookup_field': db_op_data.get('lookup-field', ''),
+                            'lookup_field_2': db_op_data.get('lookup-field-2'),
+                            'status': db_op_data.get('status'),
+                            'function_name': db_op_data.get('function-name')
+                        }
+                    )
+                except Exception as db_op_error:
+                    logger.warning(f"Failed to create DbOperation for event {event.name}: {str(db_op_error)}")
+
             created_events.append(event)
     
     # Process operations to set consumes/publishes relationships and store endpoints
@@ -2174,6 +2302,7 @@ def _perform_import(yaml_data, request):
                             defaults={
                                 'name': db_payload_name,
                                 'service': service,
+                                'description': schema_data.get('description'),
                                 'create_rest': schema_data.get('x-create-rest', False),
                                 'x_parser_schema_id': schema_data.get('x-parser-schema-id'),
                                 'x_derives_from': schema_data.get('x-derives-from')
@@ -2213,10 +2342,44 @@ def _perform_import(yaml_data, request):
                                         'minimum': field_data.get('minimum'),
                                         'maximum': field_data.get('maximum'),
                                         'x_type': field_data.get('x-type'),
+                                        'x_type_override': field_data.get('x-type-override'),
+                                        'x_size': field_data.get('x-size'),
                                         'x_unique': field_data.get('x-unique', False),
+                                        'x_unique_index': field_data.get('x-unique-index', False),
                                         'x_index': field_data.get('x-index', False),
-                                        'default_value': field_data.get('default'),
-                                        'x_relation_schema_id': field_data.get('x-relation-schema-id')
+                                        'x_not_null': field_data.get('x-not-null', False),
+                                        'x_nullable': field_data.get('x-nullable', False),
+                                        'x_check': field_data.get('x-check'),
+                                        'x_column': field_data.get('x-column'),
+                                        'x_comment': field_data.get('x-comment'),
+                                        'x_serializer': field_data.get('x-serializer'),
+                                        'x_ignore': field_data.get('x-ignore', False),
+                                        'x_precision': field_data.get('x-precision'),
+                                        'x_scale': field_data.get('x-scale'),
+                                        'x_auto_create_time': field_data.get('x-auto-create-time', False),
+                                        'x_auto_update_time': field_data.get('x-auto-update-time', False),
+                                        'x_auto_increment': field_data.get('x-auto-increment', False),
+                                        'default_value': field_data.get('x-default'),
+                                        'x_relation_schema_id': field_data.get('x-relation-schema-id'),
+                                        'x_foreign_key': field_data.get('x-foreign-key'),
+                                        'x_references': field_data.get('x-references'),
+                                        'x_cascade_update': field_data.get('x-cascade-update'),
+                                        'x_cascade_delete': field_data.get('x-cascade-delete'),
+                                        'x_many_to_many': field_data.get('x-many-to-many'),
+                                        'x_join_table': field_data.get('x-join-table'),
+                                        'x_join_foreign_key': field_data.get('x-join-foreign-key'),
+                                        'x_join_references': field_data.get('x-join-references'),
+                                        'x_association_autocreate': field_data.get('x-association-autocreate', False),
+                                        'x_association_autoupdate': field_data.get('x-association-autoupdate', False),
+                                        'x_association_save_reference': field_data.get('x-association-save-reference', False),
+                                        'x_embedded': field_data.get('x-embedded', False),
+                                        'x_embedded_prefix': field_data.get('x-embedded-prefix'),
+                                        'x_polymorphic': field_data.get('x-polymorphic'),
+                                        'x_polymorphic_value': field_data.get('x-polymorphic-value'),
+                                        'x_association_foreign_key': field_data.get('x-association-foreign-key'),
+                                        'x_constraint': field_data.get('x-constraint'),
+                                        'x_preload': field_data.get('x-preload', False),
+                                        'x_primary_key': field_data.get('x-primary-key', False),
                                     }
                                 )
                             except Exception as db_field_error:
